@@ -41,4 +41,9 @@ int zcomp_decompress(struct zcomp_strm *zstrm,
 		const void *src, unsigned int src_len, void *dst);
 
 bool zcomp_set_max_streams(struct zcomp *comp, int num_strm);
+
+#ifdef CONFIG_ZRAM_MULTI_COMP
+/* Lookup zspalloc class index for given compressed size */
+unsigned int zs_lookup_class_index(struct zs_pool *pool, size_t size);
+#endif
 #endif /* _ZCOMP_H_ */
