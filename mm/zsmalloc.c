@@ -2409,6 +2409,30 @@ void zs_pool_stats(struct zs_pool *pool, struct zs_pool_stats *stats)
 }
 EXPORT_SYMBOL_GPL(zs_pool_stats);
 
+/*
+ * zs_lookup_class_index - lookup the class index for a given size
+ * @pool: zsmalloc pool to use
+ * @size: size of the object
+ *
+ * Returns the class index for the given object size.
+ * This is used by zram multi-comp recompression to compare
+ * compression efficiency across different algorithms.
+ */
+unsigned int zs_lookup_class_index(struct zs_pool *pool, size_t size)
+{
+	int class_idx;
+
+	if (!size || (size > ZS_MAX_ALLOC_SIZE))
+		return 0;
+
+	class_idx = get_size_class_index(size);
+	if (class_idx < 0)
+		return 0;
+
+	return (unsigned int)class_idx;
+}
+EXPORT_SYMBOL_GPL(zs_lookup_class_index);
+
 static unsigned long zs_shrinker_scan(struct shrinker *shrinker,
 		struct shrink_control *sc)
 {
