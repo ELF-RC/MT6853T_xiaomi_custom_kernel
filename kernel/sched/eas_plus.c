@@ -930,11 +930,16 @@ update_sg_util(struct task_struct *p, int dst_cpu,
 	 * its pd list and will not be accounted by compute_energy().
 	 */
 	for_each_cpu_and(cpu, sg_mask, cpu_online_mask) {
-		unsigned long cpu_util, cpu_boosted_util;
+		unsigned long cpu_util, cpu_boosted_util, fb_util;
 		struct task_struct *tsk = cpu == dst_cpu ? p : NULL;
 
 		cpu_util = cpu_util_without(cpu, p);
 		cpu_boosted_util = uclamp_rq_util_with(cpu_rq(cpu), cpu_util, p);
+
+		/* Apply frame boost if applicable */
+		fb_util = frame_boost_cpu_util(cpu);
+		if (fb_util > cpu_boosted_util)
+			cpu_boosted_util = fb_util;
 
 		if (tsk)
 			cpu_util += task_util_est(p);
