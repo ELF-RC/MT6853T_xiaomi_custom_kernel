@@ -40,6 +40,7 @@
 #include "tune.h"
 #include "walt.h"
 #include "eas_plus.h"
+#include "frame_boost.h"
 #include "hmp.h"
 
 /*

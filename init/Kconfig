@@ -1161,6 +1161,23 @@ config SCHED_TUNE
 
 	  If unsure, say N.
 
+config SCHED_FRAME_BOOST
+	bool "Frame-aware scheduling boost for MT6853"
+	depends on SMP
+	default y
+	help
+	  This option enables frame-aware CPU frequency boosting for the
+	  MT6853 SoC. It detects frame rendering patterns and boosts CPU
+	  frequency during frame rendering to reduce latency and jank.
+
+	  Features:
+	  - Frame rendering pattern detection
+	  - Per-task frame boost hints
+	  - CPU frequency boost during frame rendering
+	  - Sysfs interface at /sys/kernel/frame_boost/
+
+	  If unsure, say Y for MT6853 platforms.
+
 config DEFAULT_USE_ENERGY_AWARE
 	bool "Default to enabling the Energy Aware Scheduler feature"
 	default n

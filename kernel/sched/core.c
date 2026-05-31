@@ -48,6 +48,7 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 #include "walt.h"
+#include "frame_boost.h"
 #include "mtk_mcdi_api.h"
 #if defined(CONFIG_MTK_GIC_V3_EXT)
 #include <linux/irqchip/mtk-gic-extend.h>
@@ -7791,6 +7792,10 @@ void __init sched_init(void)
 	init_sched_energy_costs();
 
 	psi_init();
+
+#ifdef CONFIG_SCHED_FRAME_BOOST
+	frame_boost_init();
+#endif
 
 	scheduler_running = 1;
 
