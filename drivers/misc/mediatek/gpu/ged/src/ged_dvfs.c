@@ -52,7 +52,7 @@
  *  Current using vsync that would be 16ms as period,
  *  below boost at (32, 48] seconds per boost
  */
-#define GED_DVFS_SKIP_ROUNDS 3
+#define GED_DVFS_SKIP_ROUNDS 2
 
 #ifdef GED_ENABLE_FB_DVFS
 spinlock_t gsGpuUtilLock;
@@ -229,7 +229,11 @@ static void _init_loading_ud_table(void)
 
 	for (i = 0; i < num; ++i) {
 		loading_ud_table[i].freq = mt_gpufreq_get_freq_by_idx(i);
-		loading_ud_table[i].up = (100 - gx_tb_dvfs_margin_cur);
+		/* use tighter up-threshold for higher OPPs for snappier boost */
+		if (i < num / 3)
+			loading_ud_table[i].up = (100 - gx_tb_dvfs_margin_cur - 5);
+		else
+			loading_ud_table[i].up = (100 - gx_tb_dvfs_margin_cur);
 	}
 
 	for (i = 0; i < num - 1; ++i) {
@@ -1319,17 +1323,17 @@ static bool ged_dvfs_policy(
 
 	/* conventional timer-based policy */
 	if (g_gpu_timer_based_emu) {
-		if (ui32GPULoading >= 99)
+		if (ui32GPULoading >= 95)
 			i32NewFreqID = 0;
 		else if (ui32GPULoading <= 1)
 			i32NewFreqID = i32MaxLevel;
 		else if (ui32GPULoading >= 85)
 			i32NewFreqID -= 2;
-		else if (ui32GPULoading <= 30)
-			i32NewFreqID += 2;
 		else if (ui32GPULoading >= 70)
 			i32NewFreqID -= 1;
-		else if (ui32GPULoading <= 50)
+		else if (ui32GPULoading <= 25)
+			i32NewFreqID += 2;
+		else if (ui32GPULoading <= 45)
 			i32NewFreqID += 1;
 
 		if (i32NewFreqID < ui32GPUFreq) {
@@ -1550,10 +1554,18 @@ static void ged_dvfs_freq_thermal_limitCB(unsigned int ui32LimitFreqID)
 
 void ged_dvfs_boost_gpu_freq(void)
 {
+	unsigned int ui32MaxLevel = mt_gpufreq_get_dvfs_table_num() - 1;
+	unsigned int ui32BoostID;
+
 	if (gpu_debug_enable)
 		GED_LOGE("%s", __func__);
 
-	ged_dvfs_freq_input_boostCB(0);
+	/* boost to ~40% of max freq range instead of always maxing out */
+	ui32BoostID = ui32MaxLevel * 40 / 100;
+	if (ui32BoostID < 1)
+		ui32BoostID = 1;
+
+	ged_dvfs_freq_input_boostCB(ui32BoostID);
 }
 
 static void ged_dvfs_set_bottom_gpu_freq(unsigned int ui32FreqLevel)
@@ -1603,6 +1615,7 @@ static unsigned int ged_dvfs_get_gpu_freq_level_count(void)
 static void ged_dvfs_custom_boost_gpu_freq(unsigned int ui32FreqLevel)
 {
 	unsigned int ui32MaxLevel;
+	unsigned int ui32CurIdx;
 
 	if (gpu_debug_enable)
 		GED_LOGE("%s: freq = %d", __func__, ui32FreqLevel);
@@ -1615,12 +1628,18 @@ static void ged_dvfs_custom_boost_gpu_freq(unsigned int ui32FreqLevel)
 
 	/* 0 => The highest frequency */
 	/* table_num - 1 => The lowest frequency */
+	ui32CurIdx = mt_gpufreq_get_cur_freq_index();
 	g_cust_boost_freq_id = ui32FreqLevel;
 	gpu_cust_boost_freq = mt_gpufreq_get_freq_by_idx(g_cust_boost_freq_id);
 
-	if (g_cust_boost_freq_id < mt_gpufreq_get_cur_freq_index()) {
-		ged_dvfs_gpu_freq_commit(g_cust_boost_freq_id,
-			gpu_cust_boost_freq, GED_DVFS_CUSTOM_BOOST_COMMIT);
+	if (g_cust_boost_freq_id < ui32CurIdx) {
+		/* only commit if boost target is significantly higher */
+		if (ui32CurIdx - g_cust_boost_freq_id >= 2 ||
+		    g_cust_boost_freq_id == 0) {
+			ged_dvfs_gpu_freq_commit(g_cust_boost_freq_id,
+				gpu_cust_boost_freq,
+				GED_DVFS_CUSTOM_BOOST_COMMIT);
+		}
 	}
 
 	mutex_unlock(&gsDVFSLock);
