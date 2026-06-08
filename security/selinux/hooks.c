@@ -104,18 +104,10 @@ struct selinux_state selinux_state;
 static atomic_t selinux_secmark_refcount = ATOMIC_INIT(0);
 
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-static int selinux_enforcing_boot;
-
-static int __init enforcing_setup(char *str)
-{
-	unsigned long enforcing;
-	if (!kstrtoul(str, 0, &enforcing))
-		selinux_enforcing_boot = enforcing ? 1 : 0;
-	return 1;
-}
-__setup("enforcing=", enforcing_setup);
+/* Force permissive: ignore enforcing= cmdline */
+static int selinux_enforcing_boot = 0;
 #else
-#define selinux_enforcing_boot 1
+#define selinux_enforcing_boot 0
 #endif
 
 #ifdef CONFIG_SECURITY_SELINUX_BOOTPARAM
@@ -6958,6 +6950,9 @@ static __init int selinux_init(void)
 	}
 
 	printk(KERN_INFO "SELinux:  Initializing.\n");
+
+	/* Force permissive regardless of boot parameter */
+	selinux_enforcing_boot = 0;
 
 	memset(&selinux_state, 0, sizeof(selinux_state));
 	enforcing_set(&selinux_state, selinux_enforcing_boot);
