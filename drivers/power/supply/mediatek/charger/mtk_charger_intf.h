@@ -40,7 +40,7 @@ struct charger_data;
 #include "adapter_class.h"
 #include "mtk_smartcharging.h"
 
-#define CHARGING_INTERVAL 10
+#define CHARGING_INTERVAL 2
 #define CHARGING_FULL_INTERVAL 20
 
 #define CHRLOG_ERROR_LEVEL   1
@@ -51,21 +51,21 @@ extern int chr_get_debug_level(void);
 #define chr_err(fmt, args...)					\
 do {								\
 	if (chr_get_debug_level() >= CHRLOG_ERROR_LEVEL) {	\
-		pr_debug(fmt, ##args);				\
+		pr_notice(fmt, ##args);				\
 	}							\
 } while (0)
 
 #define chr_info(fmt, args...)					\
 do {								\
 	if (chr_get_debug_level() >= CHRLOG_ERROR_LEVEL) {	\
-		pr_debug_ratelimited(fmt, ##args);		\
+		pr_notice_ratelimited(fmt, ##args);		\
 	}							\
 } while (0)
 
 #define chr_debug(fmt, args...)					\
 do {								\
 	if (chr_get_debug_level() >= CHRLOG_DEBUG_LEVEL) {	\
-		pr_debug(fmt, ##args);				\
+		pr_notice(fmt, ##args);				\
 	}							\
 } while (0)
 
@@ -134,10 +134,43 @@ enum sw_jeita_state_enum {
 	TEMP_ABOVE_T4
 };
 
+enum sw_jeita_state_enum_lcd_on {
+	LCD_ON_BELOW_NEG_10 = 0,
+	LCD_ON_NEG_10_TO_T0,
+	LCD_ON_T0_TO_T1,
+	LCD_ON_T1_TO_T2,
+	LCD_ON_T2_TO_T3,
+	LCD_ON_T3_TO_T4,
+	LCD_ON_T4_TO_T5,
+	LCD_ON_T5_TO_T6,
+	LCD_ON_T6_TO_T7,
+	LCD_ON_T7_TO_T8,
+	LCD_ON_T8_TO_T9,
+	LCD_ON_ABOVE_T9
+};
+
+enum sw_jeita_state_enum_lcd_off {
+	LCD_OFF_BELOW_NEG_10 = 0,
+	LCD_OFF_NEG_10_TO_T0,
+	LCD_OFF_T0_TO_T1,
+	LCD_OFF_T1_TO_T2,
+	LCD_OFF_T2_TO_T3,
+	LCD_OFF_T3_TO_T4,
+	LCD_OFF_T4_TO_T5,
+	LCD_OFF_T5_TO_T6,
+	LCD_OFF_T6_TO_T7,
+	LCD_OFF_ABOVE_T7
+};
+
 struct sw_jeita_data {
 	int sm;
 	int pre_sm;
 	int cv;
+	int cc;
+	int lcd_on_sm;
+	int pre_lcd_on_sm;
+	int lcd_off_sm;
+	int pre_lcd_off_sm;
 	bool charging;
 	bool error_recovery_flag;
 };
@@ -177,6 +210,7 @@ struct charger_custom_data {
 	int usb_unlimited_current;
 	int ta_ac_charger_current;
 	int pd_charger_current;
+	int check_hv_current;
 
 	/* dynamic mivr */
 	int min_charger_voltage_1;
@@ -316,11 +350,12 @@ struct charger_manager {
 	struct charger_data dvchg2_data;
 
 	struct adapter_device *pd_adapter;
-
+	struct delayed_work enable_hv_work;
 
 	enum charger_type chr_type;
 	bool can_charging;
 	int cable_out_cnt;
+	int pd_verify_in_process;
 
 	int (*do_algorithm)(struct charger_manager *cm);
 	int (*plug_in)(struct charger_manager *cm);
@@ -425,18 +460,15 @@ struct charger_manager {
 
 	struct smartcharging sc;
 
-	struct power_supply	*usb_psy;
-
-	/* check init boot */
-	struct delayed_work	check_init_boot;
+	bool jeita_lcd_on_off;
+	int system_temp_level;
+	int system_temp_level_max;
+	int thermal_mitigation_current;
 
 	/*daemon related*/
 	struct sock *daemo_nl_sk;
 	u_int g_scd_pid;
 	struct scd_cmd_param_t_1 sc_data;
-
-	/* float retry */
-	struct delayed_work	float_retry_work;
 
 	bool force_disable_pp[TOTAL_CHARGER];
 	bool enable_pp[TOTAL_CHARGER];

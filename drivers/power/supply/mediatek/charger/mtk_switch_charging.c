@@ -118,6 +118,7 @@ static void swchg_select_charging_current_limit(struct charger_manager *info)
 
 	pdata = &info->chg1_data;
 	mutex_lock(&swchgalg->ichg_aicr_access_mutex);
+	chr_err("[PDC_DBG] chr_type=%d pd_type=%d pdc=%d pe40=%d\n", info->chr_type, info->pd_type, mtk_pdc_check_charger(info), mtk_pe40_get_is_connect(info));
 
 	/* AICL */
 	if (!mtk_pe20_get_is_connect(info) && !mtk_pe_get_is_connect(info) &&
@@ -133,6 +134,7 @@ static void swchg_select_charging_current_limit(struct charger_manager *info)
 	}
 
 	if (pdata->force_charging_current > 0) {
+		chr_err("[PDC_DBG] branch: force_charging\n");
 
 		pdata->charging_current_limit = pdata->force_charging_current;
 		if (pdata->force_charging_current <= 450000) {
@@ -182,6 +184,12 @@ static void swchg_select_charging_current_limit(struct charger_manager *info)
 			info->data.pe40_single_charger_input_current;
 		pdata->charging_current_limit =
 			info->data.pe40_single_charger_current;
+	} else if (info->pd_type == MTK_PD_CONNECT_PE_READY_SNK ||
+		   info->pd_type == MTK_PD_CONNECT_PE_READY_SNK_PD30) {
+		pdata->input_current_limit =
+			info->data.pe40_single_charger_input_current;
+		pdata->charging_current_limit =
+			info->data.pe40_single_charger_current;
 	} else if (is_typec_adapter(info)) {
 		if (adapter_dev_get_property(info->pd_adapter, TYPEC_RP_LEVEL)
 			== 3000) {
@@ -196,31 +204,26 @@ static void swchg_select_charging_current_limit(struct charger_manager *info)
 			pdata->input_current_limit = 500000;
 			pdata->charging_current_limit = 500000;
 		}
+			/* Apply thermal limits to TypeC adapter charging */
+			if (pdata->thermal_input_current_limit != -1 &&
+			    pdata->thermal_input_current_limit < pdata->input_current_limit)
+				pdata->input_current_limit = pdata->thermal_input_current_limit;
+			if (pdata->thermal_charging_current_limit != -1 &&
+			    pdata->thermal_charging_current_limit < pdata->charging_current_limit)
+				pdata->charging_current_limit = pdata->thermal_charging_current_limit;
 
-		chr_err("type-C:%d current:%d\n",
+			chr_err("type-C:%d current:%d thermal_limit:%d,%d\n",
 			info->pd_type,
 			adapter_dev_get_property(info->pd_adapter,
-				TYPEC_RP_LEVEL));
-	} else if (mtk_pdc_check_charger(info)) {
-		int vbus = 0, cur = 0, idx = 0;
-
-		ret = mtk_pdc_get_setting(info, &vbus, &cur, &idx);
-		if (ret != -1 && idx != -1) {
-			pdata->input_current_limit = cur * 1000;
-			pdata->charging_current_limit =
-				info->data.pd_charger_current;
-			mtk_pdc_setup(info, idx);
-		} else {
-			pdata->input_current_limit =
-				info->data.usb_charger_current_configured;
-			pdata->charging_current_limit =
-				info->data.usb_charger_current_configured;
-		}
-		chr_err("[%s]vbus:%d input_cur:%d idx:%d current:%d\n",
-			__func__, vbus, cur, idx,
-			info->data.pd_charger_current);
-
-	} else if (info->chr_type == STANDARD_HOST) {
+					TYPEC_RP_LEVEL),
+				pdata->thermal_input_current_limit,
+				pdata->thermal_charging_current_limit);
+    } else if (mtk_pdc_check_charger(info)) {
+        pdata->input_current_limit =
+            info->data.pe40_single_charger_input_current;
+        pdata->charging_current_limit =
+            info->data.pe40_single_charger_current;
+    } else if (info->chr_type == STANDARD_HOST) {
 		if (IS_ENABLED(CONFIG_USBIF_COMPLIANCE)) {
 			if (info->usb_state == USB_SUSPEND)
 				pdata->input_current_limit =
@@ -321,7 +324,8 @@ static void swchg_select_charging_current_limit(struct charger_manager *info)
 
 	if (pdata->input_current_limit_by_aicl != -1 &&
 	    !mtk_pe20_get_is_connect(info) && !mtk_pe_get_is_connect(info) &&
-	    !mtk_is_TA_support_pd_pps(info)) {
+	    !mtk_is_TA_support_pd_pps(info) &&
+	    !mtk_pdc_check_charger(info)) {
 		if (pdata->input_current_limit_by_aicl <
 		    pdata->input_current_limit)
 			pdata->input_current_limit =

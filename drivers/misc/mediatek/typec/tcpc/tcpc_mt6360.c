@@ -2469,14 +2469,22 @@ static int mt6360_tcpcdev_init(struct mt6360_chip *chip, struct device *dev)
 	else
 		dev_info(dev, "%s PD REV20\n", __func__);
 
+#ifdef CONFIG_USB_PD_REV30
+	/*
+	 * 使能 PD3.0 硬件协议层
+	 * MT6360_REG_PD3_CTRL — inc/mt6360.h 已定义
+	 * BIT(0) — 通用使能位，安全默认值
+	 */
+	mt6360_i2c_write8(chip->tcpc, MT6360_REG_PD3_CTRL, 0x01);
+
+	/* PD Revision 寄存器写入 3.0 = 0x0300 */
+	mt6360_i2c_write16(chip->tcpc, TCPC_V10_REG_PD_REV, 0x0300);
+
+	dev_info(dev, "%s PD3_CTRL & PD_REV set\n", __func__);
+#endif
+
 	chip->tcpc->tcpc_flags |= TCPC_FLAGS_DISABLE_LEGACY;
 	chip->tcpc->tcpc_flags |= TCPC_FLAGS_WATCHDOG_EN;
-#ifdef CONFIG_MTK_TYPEC_WATER_DETECT_BY_PCB
-	if (gpio_get_value(chip->pcb_gpio) == chip->pcb_gpio_polarity)
-		chip->tcpc->tcpc_flags |= TCPC_FLAGS_WATER_DETECTION;
-#else
-	chip->tcpc->tcpc_flags |= TCPC_FLAGS_WATER_DETECTION;
-#endif /* CONFIG_MTK_TYPEC_WATER_DETECT_BY_PCB */
 	chip->tcpc->tcpc_flags |= TCPC_FLAGS_CABLE_TYPE_DETECTION;
 	return 0;
 }
