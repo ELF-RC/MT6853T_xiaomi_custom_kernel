@@ -6019,7 +6019,7 @@ page_owner=on loop.max_part=7";
 		non_std_ac_charger_current = <500000>;
 		charging_host_charger_current = <1500000>;
 		ta_ac_charger_current = <3000000>;
-		pd_charger_current = <500000>;
+		pd_charger_current = <3000000>;
 
 		/* battery temperature protection */
 		temp_t4_threshold = <50>;
@@ -6033,7 +6033,8 @@ page_owner=on loop.max_part=7";
 		/* enable_sw_jeita; */
 		/* enable_pe_plus; */
 		/* enable_pe_2; */
-		/* enable_pe_4; */
+		enable_pe_4;
+		enable_pe_5;
 		enable_type_c;
 		power_path_support;
 		enable_dynamic_mivr;
