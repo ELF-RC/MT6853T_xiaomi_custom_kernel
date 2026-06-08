@@ -73,12 +73,24 @@
 
 #include "mtk_charger_intf.h"
 #include "mtk_charger_init.h"
+#include <tcpm.h>
 
+int thermal_mitigation[] = {
+	3000000,3000000,2800000,2600000,
+	2400000,2000000,1800000,1600000,
+	1400000,1200000,1000000,1000000,
+	1000000,1000000,1200000,1200000,
+	1200000,1000000,1000000,800000,
+	800000,600000,600000,600000,
+	500000,500000,500000,500000,
+};
+
+static bool report_full = false;
 static struct charger_manager *pinfo;
 static struct list_head consumer_head = LIST_HEAD_INIT(consumer_head);
 static DEFINE_MUTEX(consumer_mutex);
 
-static bool first_boot_flag;
+static void usbpd_mi_vdm_received_cb(struct tcp_ny_uvdm uvdm);
 
 bool mtk_is_TA_support_pd_pps(struct charger_manager *pinfo)
 {
@@ -268,6 +280,21 @@ struct charger_consumer *charger_manager_get_by_name(struct device *dev,
 }
 EXPORT_SYMBOL(charger_manager_get_by_name);
 
+#define RERUN_BC12_DELAY_1S 1000
+#define RERUN_BC12_DELAY_8S 8000
+static void mtk_enable_hv_work(struct work_struct *work)
+{
+	struct charger_manager *info = container_of(work,
+			struct charger_manager, enable_hv_work.work);
+	int ret;
+
+	pr_info("%s:rerun bc12 check for hv_enable:%d.\n", __func__, info->enable_hv_charging);
+	ret = charger_dev_rerun_apsd(info->chg1_dev, !info->enable_hv_charging);
+	if (ret < 0)
+		chr_err("%s: en chgdet fail.\n", __func__);
+}
+
+extern bool test_flag;
 int charger_manager_enable_high_voltage_charging(
 			struct charger_consumer *consumer, bool en)
 {
@@ -275,6 +302,7 @@ int charger_manager_enable_high_voltage_charging(
 	struct list_head *pos = NULL;
 	struct list_head *phead = &consumer_head;
 	struct charger_consumer *ptr = NULL;
+	int ret;
 
 	if (!info)
 		return -EINVAL;
@@ -286,7 +314,7 @@ int charger_manager_enable_high_voltage_charging(
 	else if (en && consumer->hv_charging_disabled == true)
 		consumer->hv_charging_disabled = false;
 	else {
-		pr_warn("[%s] already set: %d %d\n", __func__,
+		pr_info("[%s] already set: %d %d\n", __func__,
 			consumer->hv_charging_disabled, en);
 		return 0;
 	}
@@ -303,8 +331,32 @@ int charger_manager_enable_high_voltage_charging(
 	}
 	mutex_unlock(&consumer_mutex);
 
-	pr_debug("%s: user: %s, en = %d\n", __func__, dev_name(consumer->dev),
+	pr_info("%s: user: %s, en = %d\n", __func__, dev_name(consumer->dev),
 		info->enable_hv_charging);
+
+	if (info->enable_hv_charging) {
+		pr_info("%s: enable_hv_charging: schedule_work: enable_hv_work.\n", __func__);
+		cancel_delayed_work_sync(&info->enable_hv_work);
+		schedule_delayed_work(&info->enable_hv_work,
+				msecs_to_jiffies(RERUN_BC12_DELAY_8S));
+	} else {
+		if (delayed_work_pending(&info->enable_hv_work)) {
+			pr_info("%s: disable_hv_charging: cancel_work: enable_hv_work.\n", __func__);
+			cancel_delayed_work_sync(&info->enable_hv_work);
+		} else {
+			pr_info("%s: first open camera: disable_hv_charging.\n", __func__);
+			if (!test_flag) {
+				ret = charger_dev_rerun_apsd(info->chg1_dev, !info->enable_hv_charging);
+				if (ret < 0)
+					chr_err("%s: en chgdet fail.\n", __func__);
+			} else {
+				pr_info("%s: test_flag = true, delay.\n", __func__);
+				schedule_delayed_work(&info->enable_hv_work,
+						msecs_to_jiffies(RERUN_BC12_DELAY_1S));
+
+			}
+		}
+	}
 
 	if (mtk_pe50_get_is_connect(info) && !info->enable_hv_charging)
 		mtk_pe50_stop_algo(info, true);
@@ -412,13 +464,13 @@ static int _charger_manager_enable_charging(struct charger_consumer *consumer,
 
 		if (en == false) {
 			_mtk_charger_do_charging(info, en);
-			pdata->disable_charging_count++;
+			//pdata->disable_charging_count++;
 		} else {
-			if (pdata->disable_charging_count == 1) {
+			//if (pdata->disable_charging_count == 1) {
 				_mtk_charger_do_charging(info, en);
-				pdata->disable_charging_count = 0;
-			} else if (pdata->disable_charging_count > 1)
-				pdata->disable_charging_count--;
+			//	pdata->disable_charging_count = 0;
+			//} else if (pdata->disable_charging_count > 1)
+			//	pdata->disable_charging_count--;
 		}
 		chr_err("%s: dev:%s idx:%d en:%d cnt:%d\n", __func__,
 			dev_name(consumer->dev), idx, en,
@@ -428,6 +480,20 @@ static int _charger_manager_enable_charging(struct charger_consumer *consumer,
 	}
 	return -EBUSY;
 
+}
+
+int charger_manager_enable_hz(struct charger_consumer *consumer,
+	int idx, bool en)
+{
+	struct charger_manager *info = consumer->cm;
+	int ret = 0;
+
+	if (info == NULL)
+		return -ENOTSUPP;
+	mutex_lock(&info->charger_lock);
+	charger_dev_enable_hz(info->chg1_dev, en);
+	mutex_unlock(&info->charger_lock);
+	return ret;
 }
 
 int charger_manager_enable_charging(struct charger_consumer *consumer,
@@ -575,6 +641,37 @@ int charger_manager_get_current_charging_type(struct charger_consumer *consumer)
 	return 0;
 }
 
+int charger_manager_get_prop_system_temp_level_max(void)
+{
+	if (pinfo == NULL)
+		return false;
+	return pinfo->system_temp_level_max;
+}
+
+int charger_manager_get_prop_system_temp_level(void)
+{
+	if (pinfo == NULL)
+		return false;
+	return pinfo->system_temp_level;
+}
+
+int charger_manager_get_thermal_mitigation_current(void)
+{
+	if (pinfo == NULL)
+		return false;
+	return pinfo->thermal_mitigation_current;
+}
+
+void charger_manager_set_prop_system_temp_level(int temp_level)
+{
+	if (temp_level >= pinfo->system_temp_level_max)
+		pinfo->system_temp_level = pinfo->system_temp_level_max - 1;
+	else
+		pinfo->system_temp_level = temp_level;
+	chr_err("%s,therml_current=%d\n",__func__,thermal_mitigation[pinfo->system_temp_level]);
+	pinfo->thermal_mitigation_current = thermal_mitigation[pinfo->system_temp_level];
+}
+
 int charger_manager_get_zcv(struct charger_consumer *consumer, int idx, u32 *uV)
 {
 	struct charger_manager *info = consumer->cm;
@@ -673,6 +770,40 @@ int charger_manager_enable_chg_type_det(struct charger_consumer *consumer,
 
 
 	return 0;
+}
+
+int mtk_charger_get_prop_pd_verify_process(union power_supply_propval *val)
+{
+	if (pinfo) {
+		val->intval = pinfo->pd_verify_in_process;
+	} else {
+		val->intval = 0;
+	}
+	return 0;
+}
+
+int mtk_charger_set_prop_pd_verify_process(const union power_supply_propval *val)
+{
+	if (pinfo) {
+		pinfo->pd_verify_in_process = val->intval;
+	} else {
+		pinfo->pd_verify_in_process = 0;
+	}
+	return 0;
+}
+
+int charger_manager_pd_is_online(void)
+{
+	if (pinfo == NULL)
+		return 0;
+
+	chr_err("%s: get charge_type %d\n", __func__, pinfo->pd_type);
+	if (pinfo->pd_type == MTK_PD_CONNECT_PE_READY_SNK ||
+		pinfo->pd_type == MTK_PD_CONNECT_PE_READY_SNK_PD30 ||
+		pinfo->pd_type == MTK_PD_CONNECT_PE_READY_SNK_APDO)
+		return 1;
+	else
+		return 0;
 }
 
 int register_charger_manager_notifier(struct charger_consumer *consumer,
@@ -860,7 +991,7 @@ void mtk_charger_get_atm_mode(struct charger_manager *info)
 			info->atm_enabled = true;
 	}
 end:
-	pr_debug("%s: atm_enabled = %d\n", __func__, info->atm_enabled);
+	pr_info("%s: atm_enabled = %d\n", __func__, info->atm_enabled);
 }
 
 /* internal algorithm common function */
@@ -898,6 +1029,9 @@ bool is_typec_adapter(struct charger_manager *info)
 			rp != 500 &&
 			info->chr_type != STANDARD_HOST &&
 			info->chr_type != CHARGING_HOST &&
+			info->chr_type != NONSTANDARD_CHARGER &&
+			info->chr_type != HVDCP_CHARGER &&
+			info->chr_type != CHECK_HV &&
 			mtk_pe20_get_is_connect(info) == false &&
 			mtk_pe_get_is_connect(info) == false &&
 			info->enable_type_c == true)
@@ -950,6 +1084,231 @@ void sw_jeita_state_machine_init(struct charger_manager *info)
 		chr_err("[SW_JEITA] tmp:%d sm:%d\n",
 			info->battery_temp, sw_jeita->sm);
 	}
+}
+
+int set_jeita_lcd_on_off(bool onoff)
+{
+	int ret = 0;
+	if (1 == onoff)
+		pinfo->jeita_lcd_on_off = 1;
+	else
+		pinfo->jeita_lcd_on_off = 0;
+
+	chr_err("sw_jeita %s: onoff = %d\n", __func__, pinfo->jeita_lcd_on_off);
+
+	return ret;
+}
+int get_jeita_lcd_on_off(void){
+	return pinfo->jeita_lcd_on_off;
+}
+
+void do_sw_jeita_state_machine_lcd_on(struct charger_manager *info)
+{
+	struct sw_jeita_data *sw_jeita;
+
+	sw_jeita = &info->sw_jeita;
+	sw_jeita->pre_lcd_on_sm = sw_jeita->lcd_on_sm;
+	sw_jeita->charging = true;
+
+	if (info->battery_temp >= TEMP_LCD_ON_T9) {
+		chr_err("[SW_JEITA] lcd_on: battery temp is too high,stop charging\n");
+		sw_jeita->charging = false;
+		sw_jeita->cc = 0;
+		sw_jeita->lcd_on_sm = LCD_ON_ABOVE_T9;
+	} else if (info->battery_temp >= TEMP_LCD_ON_T8) {
+		if((sw_jeita->lcd_on_sm == LCD_ON_ABOVE_T9) &&(info->battery_temp >= (TEMP_LCD_ON_T9 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: temp too high, keep stop charging\n");
+			sw_jeita->charging = false;
+			sw_jeita->cc = 0;
+		} else {
+			chr_err("[SW_JEITA] lcd_on: temp too high, stop charging\n");
+			sw_jeita->charging = false;
+			sw_jeita->cc = 0;
+			sw_jeita->lcd_on_sm = LCD_ON_T8_TO_T9;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_T7) {
+		if((sw_jeita->lcd_on_sm == LCD_ON_T8_TO_T9) &&(info->battery_temp >= (TEMP_LCD_ON_T8 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: temp too high, keep stop charging\n");
+			sw_jeita->charging = false;
+			sw_jeita->cc = 0;
+		} else {
+			chr_err("[SW_JEITA] lcd_on: temp too high, stop charging\n");
+			sw_jeita->charging = false;
+			sw_jeita->cc = 0;
+			sw_jeita->lcd_on_sm = LCD_ON_T7_TO_T8;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_T6) {
+		if((sw_jeita->lcd_on_sm == LCD_ON_T7_TO_T8) &&(info->battery_temp >= (TEMP_LCD_ON_T7 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: temp too high, keep stop charging\n");
+			sw_jeita->charging = false;
+			sw_jeita->cc = 0;
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_T6_TO_T7\n");
+			sw_jeita->cc = CURR_LCD_ON_T6_TO_T7;
+			sw_jeita->lcd_on_sm = LCD_ON_T6_TO_T7;
+		}
+	}
+	}  else if (info->battery_temp >= TEMP_LCD_ON_T5) {
+		if((sw_jeita->lcd_on_sm == LCD_ON_T6_TO_T7) &&(info->battery_temp >= (TEMP_LCD_ON_T6 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_T6_TO_T7\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_T5_TO_T6\n");
+			sw_jeita->cc = CURR_LCD_ON_T5_TO_T6;
+			sw_jeita->lcd_on_sm = LCD_ON_T5_TO_T6;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_T4) {
+		if((sw_jeita->lcd_on_sm == LCD_ON_T5_TO_T6) &&(info->battery_temp >= (TEMP_LCD_ON_T5 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_T5_TO_T6\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_T4_TO_T5\n");
+			sw_jeita->cc = CURR_LCD_ON_T4_TO_T5;
+			sw_jeita->lcd_on_sm = LCD_ON_T4_TO_T5;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_T3) {
+		if((sw_jeita->lcd_on_sm == LCD_ON_T4_TO_T5) &&(info->battery_temp >= (TEMP_LCD_ON_T4 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_T4_TO_T5\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_T3_TO_T4\n");
+			sw_jeita->cc = CURR_LCD_ON_T3_TO_T4;
+			sw_jeita->lcd_on_sm = LCD_ON_T3_TO_T4;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_T2) {
+		if((sw_jeita->lcd_on_sm == LCD_ON_T3_TO_T4) &&(info->battery_temp >= (TEMP_LCD_ON_T3 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_T3_TO_T4\n");
+		} else if ((sw_jeita->lcd_on_sm == LCD_ON_T1_TO_T2) &&(info->battery_temp <= (TEMP_LCD_ON_T2 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_T1_TO_T2\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_T2_TO_T3\n");
+			sw_jeita->cc = CURR_LCD_ON_T2_TO_T3;
+			sw_jeita->lcd_on_sm = LCD_ON_T2_TO_T3;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_T1) {
+		if ((sw_jeita->lcd_on_sm == LCD_ON_T0_TO_T1) &&(info->battery_temp <= (TEMP_LCD_ON_T1 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_T0_TO_T1\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_T1_TO_T2\n");
+			sw_jeita->cc = CURR_LCD_ON_T1_TO_T2;
+			sw_jeita->lcd_on_sm = LCD_ON_T1_TO_T2;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_T0) {
+		if ((sw_jeita->lcd_on_sm == LCD_ON_NEG_10_TO_T0) &&(info->battery_temp <= (TEMP_LCD_ON_T0 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_NEG_10_TO_T0\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_T1_TO_T2\n");
+			sw_jeita->cc = CURR_LCD_ON_T0_TO_T1;
+			sw_jeita->lcd_on_sm = LCD_ON_T0_TO_T1;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_ON_NEG_10) {
+		if ((sw_jeita->lcd_on_sm == LCD_ON_BELOW_NEG_10) &&(info->battery_temp <= (TEMP_LCD_ON_NEG_10 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_on: battery temp is too low still,keep stop charging\n");
+			sw_jeita->charging = false;
+		} else {
+			chr_err("[SW_JEITA] lcd_on: CURR_LCD_ON_NEG_10_TO_T0\n");
+			sw_jeita->charging = true;
+			sw_jeita->cc = CURR_LCD_ON_NEG_10_TO_T0;
+			sw_jeita->lcd_on_sm = LCD_ON_NEG_10_TO_T0;
+		}
+	} else {
+		chr_err("[SW_JEITA] lcd_on: battery temp is too low,stop charging\n");
+		sw_jeita->charging = false;
+		sw_jeita->cc = 0;
+		sw_jeita->lcd_on_sm = LCD_ON_BELOW_NEG_10;
+	}
+	chr_err("[SW_JEITA] lcd_on:pre_lcd_on_sm=%d,lcd_on_sm=%d,temp=%d,charging=%d,cc=%d\n",sw_jeita->pre_lcd_on_sm,
+		sw_jeita->lcd_on_sm,info->battery_temp,sw_jeita->charging,sw_jeita->cc);
+}
+
+void do_sw_jeita_state_machine_lcd_off(struct charger_manager *info)
+{
+	struct sw_jeita_data *sw_jeita;
+
+	sw_jeita = &info->sw_jeita;
+	sw_jeita->pre_lcd_off_sm = sw_jeita->lcd_off_sm;
+	sw_jeita->charging = true;
+
+	if (info->battery_temp >= TEMP_LCD_OFF_T7) {
+		chr_err("[SW_JEITA] lcd_off: battery temp is too high,stop charging\n");
+		sw_jeita->charging = false;
+		sw_jeita->cc = 0;
+		sw_jeita->lcd_off_sm = LCD_OFF_ABOVE_T7;
+	} else if (info->battery_temp >= TEMP_LCD_OFF_T6) {
+		if((sw_jeita->lcd_off_sm == LCD_OFF_ABOVE_T7) &&(info->battery_temp >= (TEMP_LCD_OFF_T7 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: battery temp is too high still,keep stop charging\n");
+			sw_jeita->charging = false;
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_OFF_T6_TO_T7\n");
+			sw_jeita->charging = true;
+			sw_jeita->cc = CURR_LCD_OFF_T6_TO_T7;
+			sw_jeita->lcd_off_sm = LCD_OFF_T6_TO_T7;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_OFF_T5) {
+		if((sw_jeita->lcd_off_sm == LCD_OFF_T6_TO_T7) &&(info->battery_temp >= (TEMP_LCD_OFF_T6 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: keep CURR_LCD_OFF_T6_TO_T7\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_OFF_T5_TO_T6\n");
+			sw_jeita->cc = CURR_LCD_OFF_T5_TO_T6;
+			sw_jeita->lcd_off_sm = LCD_OFF_T5_TO_T6;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_OFF_T4) {
+		if((sw_jeita->lcd_off_sm == LCD_OFF_T5_TO_T6) &&(info->battery_temp >= (TEMP_LCD_OFF_T5 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: keep CURR_LCD_OFF_T5_TO_T6\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_OFF_T4_TO_T5\n");
+			sw_jeita->cc = CURR_LCD_OFF_T4_TO_T5;
+			sw_jeita->lcd_off_sm = LCD_OFF_T4_TO_T5;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_OFF_T3) {
+		if((sw_jeita->lcd_off_sm == LCD_OFF_T4_TO_T5) &&(info->battery_temp >= (TEMP_LCD_OFF_T4 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: keep CURR_LCD_OFF_T4_TO_T5\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_OFF_T3_TO_T4\n");
+			sw_jeita->cc = CURR_LCD_OFF_T3_TO_T4;
+			sw_jeita->lcd_off_sm = LCD_OFF_T3_TO_T4;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_OFF_T2) {
+		if((sw_jeita->lcd_off_sm == LCD_OFF_T3_TO_T4) &&(info->battery_temp >= (TEMP_LCD_OFF_T3 - OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: keep CURR_LCD_OFF_T3_TO_T4\n");
+		} else if ((sw_jeita->lcd_off_sm == LCD_OFF_T1_TO_T2) &&(info->battery_temp <= (TEMP_LCD_OFF_T2 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: keep CURR_LCD_OFF_T1_TO_T2\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_OFF_T2_TO_T3\n");
+			sw_jeita->cc = CURR_LCD_OFF_T2_TO_T3;
+			sw_jeita->lcd_off_sm = LCD_OFF_T2_TO_T3;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_OFF_T1) {
+		if ((sw_jeita->lcd_off_sm == LCD_OFF_T0_TO_T1) &&(info->battery_temp <= (TEMP_LCD_OFF_T1 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: keep CURR_LCD_ON_T0_TO_T1\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_OFF_T1_TO_T2\n");
+			sw_jeita->cc = CURR_LCD_OFF_T1_TO_T2;
+			sw_jeita->lcd_off_sm = LCD_OFF_T1_TO_T2;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_OFF_T0) {
+		if ((sw_jeita->lcd_off_sm == LCD_OFF_NEG_10_TO_T0) &&(info->battery_temp <= (TEMP_LCD_OFF_T0 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: keep CURR_LCD_OFF_NEG_10_TO_T0\n");
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_ON_T0_TO_T1\n");
+			sw_jeita->cc = CURR_LCD_OFF_T0_TO_T1;
+			sw_jeita->lcd_off_sm = LCD_OFF_T0_TO_T1;
+		}
+	} else if (info->battery_temp >= TEMP_LCD_OFF_NEG_10) {
+		if ((sw_jeita->lcd_off_sm == LCD_OFF_BELOW_NEG_10) &&(info->battery_temp <= (TEMP_LCD_OFF_NEG_10 + OFFSET)) ) {
+			chr_err("[SW_JEITA] lcd_off: battery temp is too low still,keep stop charging\n");
+			sw_jeita->charging = false;
+		} else {
+			chr_err("[SW_JEITA] lcd_off: CURR_LCD_OFF_NEG_10_TO_T0\n");
+			sw_jeita->charging = true;
+			sw_jeita->cc = CURR_LCD_OFF_NEG_10_TO_T0;
+			sw_jeita->lcd_off_sm = LCD_OFF_NEG_10_TO_T0;
+		}
+	} else {
+		chr_err("[SW_JEITA] lcd_off: battery temp is too low,stop charging\n");
+		sw_jeita->charging = false;
+		sw_jeita->cc = 0;
+		sw_jeita->lcd_off_sm = LCD_OFF_BELOW_NEG_10;
+	}
+	chr_err("[SW_JEITA] lcd_off:pre_lcd_off_sm=%d,lcd_off_sm=%d,temp=%d,charging=%d,cc=%d\n",
+		sw_jeita->pre_lcd_off_sm,sw_jeita->lcd_off_sm,info->battery_temp,sw_jeita->charging,sw_jeita->cc);
 }
 
 void do_sw_jeita_state_machine(struct charger_manager *info)
@@ -1349,16 +1708,6 @@ void mtk_charger_int_handler(void)
 	_wake_up_charger(pinfo);
 }
 
-static void mtk_check_init_boot_work(struct work_struct *work)
-{
-	struct charger_manager *info = container_of(work,
-			struct charger_manager, check_init_boot.work);
-
-	first_boot_flag = true;
-	if (info->usb_psy)
-		power_supply_changed(info->usb_psy);
-}
-
 static int mtk_charger_plug_in(struct charger_manager *info,
 				enum charger_type chr_type)
 {
@@ -1374,16 +1723,25 @@ static int mtk_charger_plug_in(struct charger_manager *info,
 	if (info->plug_in != NULL)
 		info->plug_in(info);
 
-	if (!first_boot_flag)
-		schedule_delayed_work(&info->check_init_boot,
-				msecs_to_jiffies(18000));
-
 	memset(&pinfo->sc.data, 0, sizeof(struct scd_cmd_param_t_1));
 	pinfo->sc.disable_in_this_plug = false;
 	wakeup_sc_algo_cmd(&pinfo->sc.data, SC_EVENT_PLUG_IN, 0);
 	charger_dev_set_input_current(info->chg1_dev,
 				info->chg1_data.input_current_limit);
 	charger_dev_plug_in(info->chg1_dev);
+	charger_manager_notifier(pinfo, CHARGER_NOTIFY_START_CHARGING);
+	/* 通知 userspace 充电状态变化 */
+	{
+		struct power_supply *usb_psy = power_supply_get_by_name("usb");
+		struct power_supply *chg_psy = power_supply_get_by_name("charger");
+		struct power_supply *ac_psy = power_supply_get_by_name("ac");
+		if (usb_psy)
+			power_supply_changed(usb_psy);
+		if (chg_psy)
+			power_supply_changed(chg_psy);
+		if (ac_psy)
+			power_supply_changed(ac_psy);
+	}
 	return 0;
 }
 
@@ -1391,6 +1749,7 @@ static int mtk_charger_plug_out(struct charger_manager *info)
 {
 	struct charger_data *pdata1 = &info->chg1_data;
 	struct charger_data *pdata2 = &info->chg2_data;
+	report_full = false;
 
 	chr_err("%s\n", __func__);
 	info->chr_type = CHARGER_UNKNOWN;
@@ -1404,6 +1763,19 @@ static int mtk_charger_plug_out(struct charger_manager *info)
 	if (info->plug_out != NULL)
 		info->plug_out(info);
 
+	charger_manager_notifier(pinfo, CHARGER_NOTIFY_STOP_CHARGING);
+	/* 通知 userspace 充电状态变化 */
+	{
+		struct power_supply *usb_psy = power_supply_get_by_name("usb");
+		struct power_supply *chg_psy = power_supply_get_by_name("charger");
+		struct power_supply *ac_psy = power_supply_get_by_name("ac");
+		if (usb_psy)
+			power_supply_changed(usb_psy);
+		if (chg_psy)
+			power_supply_changed(chg_psy);
+		if (ac_psy)
+			power_supply_changed(ac_psy);
+	}
 	memset(&pinfo->sc.data, 0, sizeof(struct scd_cmd_param_t_1));
 	wakeup_sc_algo_cmd(&pinfo->sc.data, SC_EVENT_PLUG_OUT, 0);
 	charger_dev_set_input_current(info->chg1_dev, 100000);
@@ -1413,75 +1785,40 @@ static int mtk_charger_plug_out(struct charger_manager *info)
 }
 
 #define FLOAT_RETRY_DELAY_5S 5000
-static void mtk_float_retry_work(struct work_struct *work)
-{
-	struct charger_manager *info = container_of(work,
-			struct charger_manager, float_retry_work.work);
-	int ret;
 
-	ret = charger_dev_rerun_apsd(info->chg1_dev, false);
-	if (ret < 0)
-		chr_err("%s: en chgdet fail\n", __func__);
-
-	pr_info("%s rerun bc12 check for float.\n", __func__);
-}
-
-bool reboot_first_flag = true;
 static bool mtk_is_charger_on(struct charger_manager *info)
 {
 	enum charger_type chr_type;
-	bool charger_online = false;
-
-	if (!charger_online)
-		chr_type = CHARGER_UNKNOWN;
-
-	chr_info("%s: online=%d, type=%d, info->type=%d.\n",
-			__func__, charger_online, chr_type, info->chr_type);
-
-	if (!reboot_first_flag && charger_online
-			&& (chr_type == NONSTANDARD_CHARGER)
-			&& (info->chr_type != NONSTANDARD_CHARGER)) {
-		chr_err("Float: will retry bc12.\n");
-		schedule_delayed_work(&info->float_retry_work,
-				msecs_to_jiffies(FLOAT_RETRY_DELAY_5S));
-	}
+	static int retry_count = 0;
 
 	chr_type = mt_get_charger_type();
 	if (chr_type == CHARGER_UNKNOWN) {
+		/* BC1.2 未完成检测，尝试重跑 APSD */
+		if (retry_count < 3) {
+			int ret;
+			retry_count++;
+			chr_err("%s: chg_type unknown, retry apsd (%d)\n",
+				__func__, retry_count);
+			ret = charger_dev_rerun_apsd(info->chg1_dev, false);
+			if (ret < 0)
+				chr_err("%s: rerun apsd fail\n", __func__);
+		}
 		if (info->chr_type != CHARGER_UNKNOWN) {
 			mtk_charger_plug_out(info);
+			info->cable_out_cnt++;
 			mutex_lock(&info->cable_out_lock);
-			info->cable_out_cnt = 0;
+			if (info->cable_out_cnt > 3) {
+				info->cable_out_cnt = 0;
+				mutex_unlock(&info->cable_out_lock);
+			}
 			mutex_unlock(&info->cable_out_lock);
-		}
-		if (reboot_first_flag && charger_online) {
-			charger_manager_notifier(info,
-					CHARGER_NOTIFY_NORMAL);
-			if (pinfo->usb_psy)
-				power_supply_changed(pinfo->usb_psy);
-			else
-				chr_err("%s: usb psy err.\n", __func__);
-			chr_err("%s: check plugin early.\n", __func__);
 		}
 	} else {
+		retry_count = 0;
 		if (info->chr_type == CHARGER_UNKNOWN)
 			mtk_charger_plug_in(info, chr_type);
-		else
-			info->chr_type = chr_type;
-
-		if (info->cable_out_cnt > 0) {
-			mtk_charger_plug_out(info);
-			mtk_charger_plug_in(info, chr_type);
-			mutex_lock(&info->cable_out_lock);
-			info->cable_out_cnt--;
-			mutex_unlock(&info->cable_out_lock);
-		}
 	}
-
-	if (chr_type == CHARGER_UNKNOWN)
-		return false;
-
-	return true;
+	return (chr_type != CHARGER_UNKNOWN);
 }
 
 static void charger_update_data(struct charger_manager *info)
@@ -1748,7 +2085,10 @@ static void charger_check_status(struct charger_manager *info)
 	thermal = &info->thermal;
 
 	if (info->enable_sw_jeita == true) {
-		do_sw_jeita_state_machine(info);
+		if (info->jeita_lcd_on_off == true)
+			do_sw_jeita_state_machine_lcd_on(info);
+		else
+			do_sw_jeita_state_machine_lcd_off(info);
 		if (info->sw_jeita.charging == false) {
 			charging = false;
 			goto stop_charging;
@@ -1947,6 +2287,94 @@ static void mtk_charger_init_timer(struct charger_manager *info)
 #endif /* CONFIG_PM */
 }
 
+#define BAT_ID_COS 0x47
+#define BAT_ID_SWD 0x57
+static int mtk_get_batt_id(void)
+{
+	struct power_supply *batt_verify;
+	union power_supply_propval pval = {0, };
+
+	batt_verify = power_supply_get_by_name("batt_verify");
+	if (!batt_verify) {
+		chr_err("wtdebug : %s can't get batt id", __func__);
+		return 0;
+	}
+	power_supply_get_property(batt_verify,
+		POWER_SUPPLY_PROP_MI_BATTERY_ID, &pval);
+	chr_err("wtdebug : %s get batt_id = %d", __func__, pval.intval);
+	return pval.intval;
+}
+
+static int adaptor_pd_authen(void)
+{
+	struct power_supply *batt_usb;
+	union power_supply_propval val = {0,};
+	int ret = 0;
+
+	batt_usb = power_supply_get_by_name("usb");
+        if (!batt_usb) {
+                chr_err("%s can't get usb pd_authen", __func__);
+                return -1;
+        }
+	ret = power_supply_get_property(batt_usb,
+		POWER_SUPPLY_PROP_PD_AUTHENTICATION, &val);
+	if (ret) {
+		pr_err("Failed to read PD authentication\n");
+		power_supply_put(batt_usb);
+		return ret;
+	}
+	power_supply_put(batt_usb);
+	return val.intval;
+}
+
+static void mtk_dynamic_set_ieoc_and_cv(struct charger_manager *info)
+{
+
+	int batt_temp = 0;
+	int batt_id = 0;
+	int pd_auth = 0;
+	unsigned int ieoc_ua = 0;
+	unsigned int vrechg_uv = 100000;
+
+	batt_id = mtk_get_batt_id();
+	pd_auth = adaptor_pd_authen();
+	batt_temp = battery_get_bat_temperature();
+	if ((batt_id == BAT_ID_COS || batt_id == BAT_ID_SWD) && !report_full) {
+		if (batt_temp >= 15 && batt_temp <= 35 && pd_auth > 0) {
+			ieoc_ua = (batt_id == BAT_ID_COS) ? 750000 : 800000;
+			info->data.battery_cv = 4420000;
+		}
+		else if (batt_temp > 35 && batt_temp <= 48 && pd_auth > 0) {
+			ieoc_ua = (batt_id == BAT_ID_COS) ? 900000 : 850000;
+			info->data.battery_cv = 4420000;
+		}
+		else if (batt_temp > 48 && batt_temp <= 60) {
+			ieoc_ua = 200000;
+			info->data.battery_cv = 4100000;
+		}
+		else {
+			ieoc_ua = 200000;
+			info->data.battery_cv = 4420000;
+		}
+		if (battery_get_uisoc() == 100 && pd_auth && batt_temp >= 15) {
+			chr_err("wt_debug : report_full don't set eoc\n");
+			report_full = true;
+		}
+		charger_dev_set_eoc_current(info->chg1_dev, ieoc_ua);
+	}
+	else
+		chr_err("wt_debug : %s not set ieoc", __func__);
+
+	if (batt_temp <= 10 && battery_get_uisoc() == 100){
+		vrechg_uv = 250000;
+	}
+	charger_dev_set_vrechg(info->chg1_dev, vrechg_uv);
+
+	chr_err("wt_debug : %s set ieoc = %u cv = %u, vrechg = %u, pd_auth = %d\n", 
+			__func__, ieoc_ua, info->data.battery_cv, vrechg_uv, pd_auth);
+
+}
+
 static int charger_routine_thread(void *arg)
 {
 	struct charger_manager *info = arg;
@@ -2001,6 +2429,9 @@ static int charger_routine_thread(void *arg)
 		} else
 			chr_debug("disable charging\n");
 
+		if (is_charger_on) {
+			mtk_dynamic_set_ieoc_and_cv(info);
+		}
 		spin_lock_irqsave(&info->slock, flags);
 		__pm_relax(&info->charger_wakelock);
 		spin_unlock_irqrestore(&info->slock, flags);
@@ -3207,6 +3638,28 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 			chr_err("PD Notify Detach\n");
 			pinfo->pd_type = MTK_PD_CONNECT_NONE;
 			mutex_unlock(&pinfo->charger_pd_lock);
+			/* Clear PD online status on detach */
+			{
+				struct power_supply *usb_psy =
+					power_supply_get_by_name("usb");
+				if (usb_psy) {
+					union power_supply_propval val = {0};
+					val.intval = 0;
+					power_supply_set_property(usb_psy,
+						POWER_SUPPLY_PROP_ONLINE, &val);
+					power_supply_set_property(usb_psy,
+						POWER_SUPPLY_PROP_APDO_MAX, &val);
+					val.intval = 0;
+					power_supply_set_property(usb_psy,
+						POWER_SUPPLY_PROP_PD_AUTHENTICATION, &val);
+					power_supply_changed(usb_psy);
+				}
+			}
+			/* Restore default input current on detach */
+			pinfo->chg1_data.input_current_limit =
+				pinfo->data.ac_charger_input_current;
+			charger_dev_set_input_current(pinfo->chg1_dev,
+				pinfo->chg1_data.input_current_limit);
 			/* reset PE40 */
 			break;
 
@@ -3217,6 +3670,18 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 			pinfo->pd_reset = true;
 			mutex_unlock(&pinfo->charger_pd_lock);
 			_wake_up_charger(pinfo);
+			/* Clear PD online status on hard reset */
+			{
+				struct power_supply *usb_psy =
+					power_supply_get_by_name("usb");
+				if (usb_psy) {
+					union power_supply_propval val = {0};
+					val.intval = 0;
+					power_supply_set_property(usb_psy,
+						POWER_SUPPLY_PROP_PD_AUTHENTICATION, &val);
+					power_supply_changed(usb_psy);
+				}
+			}
 			/* reset PE40 */
 			break;
 
@@ -3225,7 +3690,51 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 			chr_err("PD Notify fixe voltage ready\n");
 			pinfo->pd_type = MTK_PD_CONNECT_PE_READY_SNK;
 			mutex_unlock(&pinfo->charger_pd_lock);
-			/* PD is ready */
+			/* Fixed PD: try 9V/3A → 9V/2A → 5V/3A */
+			{
+				int pd_mV = 5000, pd_mA = 3000, pd_watt = 15;
+				int ret;
+
+				ret = adapter_dev_set_cap(pinfo->pd_adapter,
+					MTK_PD, 9000, 3000);
+				if (ret == MTK_ADAPTER_OK) {
+					pd_mV = 9000; pd_mA = 3000; pd_watt = 27;
+				} else {
+					ret = adapter_dev_set_cap(pinfo->pd_adapter,
+						MTK_PD, 9000, 2000);
+					if (ret == MTK_ADAPTER_OK) {
+						pd_mV = 9000; pd_mA = 2000; pd_watt = 18;
+					} else {
+						adapter_dev_set_cap(pinfo->pd_adapter,
+							MTK_PD, 5000, 3000);
+						pd_mV = 5000; pd_mA = 3000; pd_watt = 15;
+					}
+				}
+				chr_err("PD fixed request: %dmV/%dmA = %dW\n",
+					pd_mV, pd_mA, pd_watt);
+				/* Apply negotiated input current to charger IC */
+				pinfo->chg1_data.input_current_limit = pd_mA * 1000;
+				charger_dev_set_input_current(pinfo->chg1_dev,
+					pd_mA * 1000);
+				{
+					struct power_supply *usb_psy =
+						power_supply_get_by_name("usb");
+					if (usb_psy) {
+						union power_supply_propval val = {0};
+						val.intval = 1;
+						power_supply_set_property(usb_psy,
+							POWER_SUPPLY_PROP_ONLINE, &val);
+						val.intval = pd_watt;
+						power_supply_set_property(usb_psy,
+							POWER_SUPPLY_PROP_APDO_MAX, &val);
+					val.intval = 1;
+					power_supply_set_property(usb_psy,
+						POWER_SUPPLY_PROP_PD_AUTHENTICATION, &val);
+						power_supply_changed(usb_psy);
+					}
+				}
+			}
+			_wake_up_charger(pinfo);
 			break;
 
 		case MTK_PD_CONNECT_PE_READY_SNK_PD30:
@@ -3233,7 +3742,51 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 			chr_err("PD Notify PD30 ready\r\n");
 			pinfo->pd_type = MTK_PD_CONNECT_PE_READY_SNK_PD30;
 			mutex_unlock(&pinfo->charger_pd_lock);
-			/* PD30 is ready */
+			/* PD3.0: try 9V/3A → 9V/2A → 5V/3A */
+			{
+				int pd_mV = 5000, pd_mA = 3000, pd_watt = 15;
+				int ret;
+
+				ret = adapter_dev_set_cap(pinfo->pd_adapter,
+					MTK_PD, 9000, 3000);
+				if (ret == MTK_ADAPTER_OK) {
+					pd_mV = 9000; pd_mA = 3000; pd_watt = 27;
+				} else {
+					ret = adapter_dev_set_cap(pinfo->pd_adapter,
+						MTK_PD, 9000, 2000);
+					if (ret == MTK_ADAPTER_OK) {
+						pd_mV = 9000; pd_mA = 2000; pd_watt = 18;
+					} else {
+						adapter_dev_set_cap(pinfo->pd_adapter,
+							MTK_PD, 5000, 3000);
+						pd_mV = 5000; pd_mA = 3000; pd_watt = 15;
+					}
+				}
+				chr_err("PD30 fixed request: %dmV/%dmA = %dW\n",
+					pd_mV, pd_mA, pd_watt);
+				/* Apply negotiated input current to charger IC */
+				pinfo->chg1_data.input_current_limit = pd_mA * 1000;
+				charger_dev_set_input_current(pinfo->chg1_dev,
+					pd_mA * 1000);
+				{
+					struct power_supply *usb_psy =
+						power_supply_get_by_name("usb");
+					if (usb_psy) {
+						union power_supply_propval val = {0};
+						val.intval = 1;
+						power_supply_set_property(usb_psy,
+							POWER_SUPPLY_PROP_ONLINE, &val);
+						val.intval = pd_watt;
+						power_supply_set_property(usb_psy,
+							POWER_SUPPLY_PROP_APDO_MAX, &val);
+						val.intval = 1;
+						power_supply_set_property(usb_psy,
+							POWER_SUPPLY_PROP_PD_AUTHENTICATION, &val);
+						power_supply_changed(usb_psy);
+					}
+				}
+			}
+			_wake_up_charger(pinfo);
 			break;
 
 		case MTK_PD_CONNECT_PE_READY_SNK_APDO:
@@ -3242,6 +3795,17 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 			pinfo->pd_type = MTK_PD_CONNECT_PE_READY_SNK_APDO;
 			mutex_unlock(&pinfo->charger_pd_lock);
 			/* PE40 is ready */
+			{
+				struct power_supply *usb_psy =
+					power_supply_get_by_name("usb");
+				if (usb_psy) {
+					union power_supply_propval val = {0};
+					val.intval = 1;
+					power_supply_set_property(usb_psy,
+						POWER_SUPPLY_PROP_PD_AUTHENTICATION, &val);
+					power_supply_changed(usb_psy);
+				}
+			}
 			_wake_up_charger(pinfo);
 			break;
 
@@ -3274,9 +3838,66 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 				atomic_set(&pinfo->enable_kpoc_shdn, 0);
 			mutex_unlock(&pinfo->charger_pd_lock);
 			break;
+		case MTK_PD_UVDM:
+			chr_err("MTK_PD_UVDM status = %d\n", *(bool *)val);
+			mutex_lock(&pinfo->charger_pd_lock);
+			usbpd_mi_vdm_received_cb(*(struct tcp_ny_uvdm *)val);
+			mutex_unlock(&pinfo->charger_pd_lock);
+			/* type C is ready */
+			_wake_up_charger(pinfo);
+			break;
 		};
 	}
 	mtk_pe50_notifier_call(pinfo, MTK_PE50_NOTISRC_TCP, evt, val);
+}
+
+static void usbpd_mi_vdm_received_cb(struct tcp_ny_uvdm uvdm)
+{
+	int i, cmd;
+
+	if (uvdm.uvdm_svid != USB_PD_MI_SVID)
+		return;
+
+	cmd = UVDM_HDR_CMD(uvdm.uvdm_data[0]);
+	pr_info("cmd = %d\n", cmd);
+
+	pr_info("uvdm.ack: %d, uvdm.uvdm_cnt: %d, uvdm.uvdm_svid: 0x%04x\n",
+			uvdm.ack, uvdm.uvdm_cnt, uvdm.uvdm_svid);
+
+	switch (cmd) {
+	case USBPD_UVDM_CHARGER_VERSION:
+		pinfo->pd_adapter->vdm_data.ta_version = uvdm.uvdm_data[1];
+		pr_info("ta_version:%x\n", pinfo->pd_adapter->vdm_data.ta_version);
+		break;
+	case USBPD_UVDM_CHARGER_TEMP:
+		pinfo->pd_adapter->vdm_data.ta_temp = (uvdm.uvdm_data[1] & 0xFFFF) * 10;
+		pr_info("pinfo->pd_adapter->vdm_data.ta_temp:%d\n", pinfo->pd_adapter->vdm_data.ta_temp);
+		break;
+	case USBPD_UVDM_CHARGER_VOLTAGE:
+		pinfo->pd_adapter->vdm_data.ta_voltage = (uvdm.uvdm_data[1] & 0xFFFF) * 10;
+		pinfo->pd_adapter->vdm_data.ta_voltage *= 1000;
+		pr_info("ta_voltage:%d\n", pinfo->pd_adapter->vdm_data.ta_voltage);
+		break;
+	case USBPD_UVDM_SESSION_SEED:
+		for (i = 0; i < USBPD_UVDM_SS_LEN; i++) {
+			pinfo->pd_adapter->vdm_data.s_secert[i] = uvdm.uvdm_data[i+1];
+			pr_info("usbpd s_secert uvdm.uvdm_data[%d]=0x%x", i+1, uvdm.uvdm_data[i+1]);
+		}
+		break;
+	case USBPD_UVDM_AUTHENTICATION:
+		for (i = 0; i < USBPD_UVDM_SS_LEN; i++) {
+			pinfo->pd_adapter->vdm_data.digest[i] = uvdm.uvdm_data[i+1];
+			pr_info("usbpd digest[%d]=0x%x", i+1, uvdm.uvdm_data[i+1]);
+		}
+		break;
+	case USBPD_UVDM_REVERSE_AUTHEN:
+		pinfo->pd_adapter->vdm_data.reauth = (uvdm.uvdm_data[1] & 0xFFFF);
+		break;
+	default:
+		break;
+	}
+
+	pinfo->pd_adapter->uvdm_state = cmd;
 }
 
 static int proc_dump_log_show(struct seq_file *m, void *v)
@@ -3949,6 +4570,8 @@ static int mtk_charger_probe(struct platform_device *pdev)
 	info->dvchg2_data.thermal_input_current_limit = -1;
 
 	info->sw_jeita.error_recovery_flag = true;
+	info->system_temp_level_max = sizeof(thermal_mitigation)/sizeof(thermal_mitigation[0]);
+	info->thermal_mitigation_current = thermal_mitigation[0];
 
 	mtk_charger_init_timer(info);
 
@@ -4043,9 +4666,7 @@ static int mtk_charger_probe(struct platform_device *pdev)
 		charger_manager_force_disable_power_path(
 			info->chg1_consumer, MAIN_CHARGER, true);
 
-	INIT_DELAYED_WORK(&info->check_init_boot, mtk_check_init_boot_work);
-	INIT_DELAYED_WORK(&info->float_retry_work, mtk_float_retry_work);
-
+	INIT_DELAYED_WORK(&info->enable_hv_work, mtk_enable_hv_work);
 	info->init_done = true;
 	_wake_up_charger(info);
 
@@ -4073,8 +4694,7 @@ static void mtk_charger_shutdown(struct platform_device *dev)
 			mtk_pe_reset_ta_vchr(info);
 		pr_debug("%s: reset TA before shutdown\n", __func__);
 	}
-	cancel_delayed_work_sync(&info->check_init_boot);
-	cancel_delayed_work_sync(&info->float_retry_work);
+	cancel_delayed_work_sync(&info->enable_hv_work);
 }
 
 static const struct of_device_id mtk_charger_of_match[] = {

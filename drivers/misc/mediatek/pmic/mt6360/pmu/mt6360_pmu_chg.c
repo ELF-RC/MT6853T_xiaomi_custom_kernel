@@ -1508,6 +1508,27 @@ out:
 	return ret;
 }
 
+static int mt6360_rerun_apsd(struct charger_device *chg_dev, bool en)
+{
+	struct mt6360_pmu_chg_info *mpci = charger_dev_get_drvdata(chg_dev);
+
+	pr_info("%s: en=%d\n", __func__, en);
+
+	if (en) {
+		/* en=true: 禁用 APSD，停止 BC1.2 检测 */
+		mpci->bc12_en = false;
+		Charger_Detect_Release();
+		pr_info("%s: APSD disabled\n", __func__);
+	} else {
+		/* en=false: 重新使能 APSD，触发 BC1.2 重检测 */
+		mpci->bc12_en = true;
+		Charger_Detect_Init();
+		pr_info("%s: APSD rerun triggered\n", __func__);
+	}
+
+	return 0;
+}
+
 static int mt6360_get_adc(struct charger_device *chg_dev, enum adc_channel chan,
 			  int *min, int *max)
 {
@@ -1849,6 +1870,7 @@ static const struct charger_ops mt6360_chg_ops = {
 	.enable_discharge = mt6360_enable_discharge,
 	/* Charger type detection */
 	.enable_chg_type_det = mt6360_enable_chg_type_det,
+	.rerun_apsd = mt6360_rerun_apsd,
 	/* ADC */
 	.get_adc = mt6360_get_adc,
 	.get_vbus_adc = mt6360_get_vbus,
@@ -2174,8 +2196,15 @@ static irqreturn_t mt6360_pmu_detachi_handler(int irq, void *data)
 static irqreturn_t mt6360_pmu_hvdcp_det_handler(int irq, void *data)
 {
 	struct mt6360_pmu_chg_info *mpci = data;
+      	int ret, i;
+	dev_info(mpci->dev, "%s: HVDCP IRQ fired!\n", __func__);
+	/* Dump registers 0x20~0x2F to find HVDCP status bit */
+	for (i = 0x20; i <= 0x2F; i++) {
+		ret = mt6360_pmu_reg_read(mpci->mpi, i);
+		if (ret >= 0)
+			dev_info(mpci->dev, "  [0x%02X]=0x%02X\n", i, (u8)ret);
+	}
 
-	dev_dbg(mpci->dev, "%s\n", __func__);
 	return IRQ_HANDLED;
 }
 
