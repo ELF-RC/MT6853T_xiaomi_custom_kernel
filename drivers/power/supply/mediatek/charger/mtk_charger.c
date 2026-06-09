@@ -1147,7 +1147,6 @@ void do_sw_jeita_state_machine_lcd_on(struct charger_manager *info)
 			sw_jeita->cc = CURR_LCD_ON_T6_TO_T7;
 			sw_jeita->lcd_on_sm = LCD_ON_T6_TO_T7;
 		}
-	}
 	}  else if (info->battery_temp >= TEMP_LCD_ON_T5) {
 		if((sw_jeita->lcd_on_sm == LCD_ON_T6_TO_T7) &&(info->battery_temp >= (TEMP_LCD_ON_T6 - OFFSET)) ) {
 			chr_err("[SW_JEITA] lcd_on: keep CURR_LCD_ON_T6_TO_T7\n");
