@@ -31,6 +31,30 @@ config ZRAM_WRITEBACK
 
 	 See Documentation/blockdev/zram.txt for more information.
 
+config ZRAM_MULTI_COMP
+	bool "Multiple compressed backends support for zram"
+	depends on ZRAM
+	help
+	  With this feature, zram can support multiple compression
+	  algorithms. User can configure primary compression algorithm
+	  and secondary compression algorithm(s) via:
+	    /sys/block/zramX/comp_algorithm  (primary)
+	    /sys/block/zramX/recomp_algorithm (secondary)
+
+	  This allows zram to recompress objects using a secondary
+	  (potentially more effective) compression algorithm, e.g.,
+	  recompress lzo-compressed objects with zstd.
+
+	  See Documentation/blockdev/zram.txt for more information.
+
+config ZRAM_DEF_COMP
+	string "Default compressor for zram"
+	depends on ZRAM
+	default "lzo"
+	help
+	  Allows you to set the default compression algorithm for zram.
+	  The default is "lzo" but can be overridden here.
+
 config ZRAM_MEMORY_TRACKING
 	bool "Track zRam block status"
 	depends on ZRAM && DEBUG_FS

@@ -382,5 +382,16 @@ config QORIQ_CPUFREQ
 	  This adds the CPUFreq driver support for Freescale QorIQ SoCs
 	  which are capable of changing the CPU's frequency dynamically.
 
+config FAKE_CPUTIME
+	bool "Fake cputime driver for MT6853"
+	default y
+	help
+	  Provides stub cputime functions that prevent kernel errors related
+	  to cputime accounting on MediaTek MT6853 SoC. These stubs return
+	  valid but minimal values, preventing UI stuttering caused by
+	  cputime accounting bugs in the scheduler tick path.
+
+	  Say Y if you are building for MT6853 (Redmi Note 9/9T 5G).
+
 endif
 endmenu
