@@ -6968,10 +6968,15 @@ boosted_cpu_util(int cpu)
 {
 	unsigned long util = cpu_util_freq(cpu);
 	long margin = schedtune_cpu_margin(util, cpu);
+	unsigned long fb_util = 0;
+
+#ifdef CONFIG_SCHED_FRAME_BOOST
+	fb_util = frame_boost_cpu_util(cpu);
+#endif
 
 	trace_sched_boost_cpu(cpu, util, margin);
 
-	return util + margin;
+	return util + margin + fb_util;
 }
 
 static inline unsigned long
