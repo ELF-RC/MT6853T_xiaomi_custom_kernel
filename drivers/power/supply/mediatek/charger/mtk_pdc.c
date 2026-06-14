@@ -414,7 +414,7 @@ int pdc_init(void)
 
 		pd->data.min_charger_voltage = 4600000;
 		pd->data.pd_vbus_low_bound = 5000000;
-		pd->data.pd_vbus_upper_bound = 5000000;
+		pd->data.pd_vbus_upper_bound = 10000000;
 		pd->data.ibus_err = 14;
 		pd->data.vsys_watt = 5000000;
 
