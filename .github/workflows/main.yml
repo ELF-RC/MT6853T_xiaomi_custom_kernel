@@ -53,7 +53,6 @@ jobs:
           
       - name: Build Kernel
         run: |
-          export LOCALVERSION=${{ github.event.inputs.LOCALVERSIONNAME }}
           export KBUILD_BUILD_HOST=Github-Action
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
           export PATH="$GITHUB_WORKSPACE/tooltmp/clang/host/linux-x86/clang-r428724/bin:$PATH"
@@ -74,6 +73,6 @@ jobs:
       - name: Upload Kernel Package
         uses: actions/upload-artifact@v4
         with:
-          name: cannon_customKernel_KernelSU_V${{ github.event.inputs.LOCALVERSIONNAME }}
+          name: cannon_customKernel_${{ github.event.inputs.LOCALVERSIONNAME }}_KernelSU_$(echo ${{ github.actor }} | tr A-Z a-z)
           path: AK3/
  
