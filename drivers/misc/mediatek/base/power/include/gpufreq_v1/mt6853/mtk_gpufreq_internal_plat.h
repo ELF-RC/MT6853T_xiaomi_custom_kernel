@@ -330,7 +330,6 @@ unsigned int g_ptpod_opp_idx_table_segment[] = {
 };
 
 /**************************************************
-/**************************************************
  * GPU OPP table definition - Simplified
  * Reduced from 37 to 18 OPPs per segment
  * Added 886MHz unlock
