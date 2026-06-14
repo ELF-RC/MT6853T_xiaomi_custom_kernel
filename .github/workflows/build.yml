@@ -1,0 +1,216 @@
+name: Auto Kernel Builder
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * 1'  # 每周一 UTC 02:00 (北京时间 10:00)
+  workflow_dispatch:
+    inputs:
+      kernelversion:
+        description: "自定义内核版本号"
+        required: true
+        default: "4.14.336"
+      version:
+        description: "自定义版本号"
+        required: true
+        default: "vX.X.X"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 20G
+      CCACHE_COMPRESS: "1"
+      CCACHE_COMPRESSLEVEL: "6"
+      CCACHE_SLOPPINESS: "file_stat_matches,time_macros,include_file_mtime"
+      CCACHE_NOHASHDIR: "1"
+      ARCH: arm64
+      SUBARCH: arm64
+      KER_VER: ${{ github.event.inputs.kernelversion || '4.14.336' }}
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Generate Dynamic Version
+      run: |
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          echo "REL_VER=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+        else
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DATE_STR=$(date +'%Y%m%d')
+          echo "REL_VER=v${DATE_STR}-${SHORT_SHA}" >> $GITHUB_ENV
+        fi
+
+    - name: Install Dependencies & Toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          clang-13 \
+          lld-13 \
+          libssl-dev \
+          libelf-dev \
+          flex \
+          bison \
+          bc \
+          ccache \
+          curl \
+          git \
+          git-lfs \
+          gnupg \
+          gperf \
+          imagemagick \
+          liblz4-tool \
+          libncurses5 \
+          libncurses5-dev \
+          libsdl1.2-dev \
+          libxml2 \
+          libxml2-utils \
+          lzop \
+          pngcrush \
+          rsync \
+          schedtool \
+          squashfs-tools \
+          xsltproc \
+          zip \
+          zlib1g-dev \
+          llvm-13 \
+          llvm-13-tools \
+          gcc-aarch64-linux-gnu \
+          gcc-arm-linux-gnueabi
+
+    - name: Set swap to 10G
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 10
+
+    - name: Configure ccache
+      run: |
+        ccache --version
+        mkdir -p $CCACHE_DIR
+        ccache -M 20G
+        ccache -p
+        ccache --zero-stats
+        ccache -s
+
+    # 用 restore-keys 做两级回退：精确 key → 前缀匹配（取最新的）
+    - name: Restore ccache
+      id: cache-restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-${{ runner.os }}-${{ env.ARCH }}-${{ github.ref_name }}-${{ github.run_id }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ env.ARCH }}-${{ github.ref_name }}-
+          ccache-${{ runner.os }}-${{ env.ARCH }}-
+
+    - name: Show ccache stats (before build)
+      run: |
+        echo "=== ccache stats before build ==="
+        ccache -s
+        echo "Cache restored: ${{ steps.cache-restore.outputs.cache-hit }}"
+
+    - name: Check GCC Toolchains
+      run: |
+        aarch64-linux-gnu-gcc --version || aarch64-linux-gnu-gcc-13 --version
+        arm-linux-gnueabi-gcc --version || arm-linux-gnueabi-gcc-13 --version
+
+    - name: Build Kernel (ARM64 Cross-Compile)
+      run: |
+        make -j$(nproc --all) O=out \
+          CC="ccache clang-13" \
+          LD=ld.lld-13 \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_COMPAT=aarch64-linux-gnueabi- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          LLVM_IAS=1 \
+          KCFLAGS="--target=aarch64-linux-gnu \
+            -Wno-unused-but-set-variable \
+            -Wno-unused-variable \
+            -Wno-unused-function \
+            -Wno-unused-label" \
+          cannon_defconfig
+
+        echo "-${REL_VER}" > .scmversion
+
+        make -j$(nproc --all) O=out \
+          CC="ccache clang-13" \
+          LD=ld.lld-13 \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_COMPAT=aarch64-linux-gnueabi- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          LLVM_IAS=1 \
+          KCFLAGS="--target=aarch64-linux-gnu \
+            -Wno-unused-but-set-variable \
+            -Wno-unused-variable \
+            -Wno-unused-function \
+            -Wno-unused-label"
+
+    - name: Show ccache stats (after build)
+      if: always()
+      run: |
+        echo "=== ccache stats after build ==="
+        ccache -s
+
+    - name: Package Kernel
+      if: success()
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+        cp out/arch/arm64/boot/Image.gz AnyKernel3/
+        cd AnyKernel3
+
+        sed -i 's/device\.name1=.*/device.name1=cannon/' anykernel.sh
+        sed -i 's/device\.name2=.*/device.name2=cannong/' anykernel.sh
+        sed -i '/device\.name[3-5]=.*/d' anykernel.sh
+        sed -i 's/BLOCK=.*/BLOCK=boot/' anykernel.sh
+        sed -i 's/IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto/' anykernel.sh
+        sed -i "s/kernel\.string=.*/kernel.string=Linux Kernel ${KER_VER} (${REL_VER}) by $(whoami)/" anykernel.sh
+
+        zip -r ../AnyKernel3-cannon-${REL_VER}.zip *
+        cd ..
+
+    - name: Set Artifact File
+      if: success()
+      run: |
+        FILE=$(ls AnyKernel3-cannon-*.zip | head -n 1)
+        echo "Found artifact: $FILE"
+        echo "ARTIFACT_FILE=$FILE" >> $GITHUB_ENV
+        FILENAME=$(basename "$FILE" .zip)
+        echo "ARTIFACT_NAME=$FILENAME" >> $GITHUB_ENV
+
+    - name: Upload AnyKernel3.zip
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        path: ${{ env.ARTIFACT_FILE }}
+        name: ${{ env.ARTIFACT_NAME }}
+
+    # 手动清理旧缓存再 save，防止缓存无限膨胀
+    - name: Delete old ccache (same branch)
+      if: always()
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        echo "Cleaning old caches for this branch..."
+        gh cache list --sort created_at --order desc \
+          --key "ccache-${{ runner.os }}-${{ env.ARCH }}-${{ github.ref_name }}-" \
+          --limit 100 \
+          --json id --jq '.[1:] | .[].id' | \
+          while read -r id; do
+            echo "Deleting cache $id"
+            gh cache delete "$id" || true
+          done
+
+    - name: Save ccache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-${{ runner.os }}-${{ env.ARCH }}-${{ github.ref_name }}-${{ github.run_id }}
