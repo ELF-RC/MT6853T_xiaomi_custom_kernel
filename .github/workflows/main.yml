@@ -58,7 +58,7 @@ jobs:
       - name: Pack Kernel with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 -b master AK3
-          cp out/arch/arm64/boot/Image.gz AK3/
+          cp out/arch/arm64/boot/Image.gz-dtb AK3/
           cd AK3
           sed -i 's|kernel.string=.*|kernel.string=Xiaomi Custom Kernel By ELF-RC|' anykernel.sh
           sed -i 's|device.name1=.*|device.name1=cannon|' anykernel.sh
