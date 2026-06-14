@@ -86,6 +86,9 @@ void frame_boost_frame_start(pid_t pid);
 /* Called when a frame completes rendering */
 void frame_boost_frame_done(pid_t pid);
 
+/* Called when a touch input event is detected (pre-emptive boost) */
+void frame_boost_touch_event(void);
+
 /* Get current boost utilization for a CPU */
 unsigned long frame_boost_cpu_util(int cpu);
 
@@ -109,6 +112,7 @@ int frame_boost_sysfs_init(void);
 static inline void frame_boost_init(void) {}
 static inline void frame_boost_frame_start(pid_t pid) {}
 static inline void frame_boost_frame_done(pid_t pid) {}
+static inline void frame_boost_touch_event(void) {}
 static inline unsigned long frame_boost_cpu_util(int cpu) { return 0; }
 static inline bool frame_boost_task_eligible(struct task_struct *p) { return false; }
 static inline int frame_boost_get_hint(struct task_struct *p, int cpu) { return 0; }

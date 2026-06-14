@@ -218,4 +218,6 @@ source "drivers/mux/Kconfig"
 source "drivers/p73-spi/Kconfig"
 
 source "drivers/kernelsu/Kconfig"
+
+source "drivers/millet/Kconfig"
 endmenu

@@ -39,16 +39,30 @@
 
 /* Global frame boost state */
 static struct frame_boost_config fb_config = {
-	.mode = FRAME_BOOST_LIGHT,
+	.mode = FRAME_BOOST_AGGRESSIVE,
 	.target_fps = 60,
-	.boost_duration_ms = 4,
-	.boost_min_util = 300,
-	.detect_window_ms = 20,
+	.boost_duration_ms = 8,
+	.boost_min_util = 512,
+	.detect_window_ms = 16,
 	.prefer_idle = true,
 	.prefer_high_cap = true,
 };
 
 static struct frame_boost_stats fb_stats;
+
+/* Touch input boost */
+static struct {
+	bool enabled;
+	u32 duration_ms;
+	u32 boost_min_util;
+	u32 boost_prio;
+	ktime_t last_touch;
+} fb_touch_boost = {
+	.enabled = true,
+	.duration_ms = 100,
+	.boost_min_util = 400,
+	.boost_prio = FRAME_BOOST_PRIO_HIGH,
+};
 
 /* Per-CPU frame boost state */
 static DEFINE_PER_CPU(struct frame_boost_cpu, fb_cpu_state);
@@ -287,6 +301,37 @@ void frame_boost_frame_done(pid_t pid)
 	}
 }
 EXPORT_SYMBOL_GPL(frame_boost_frame_done);
+
+void frame_boost_touch_event(void)
+{
+	ktime_t now, expire;
+	struct frame_boost_cpu *fbc;
+	int cpu;
+
+	if (!fb_touch_boost.enabled)
+		return;
+	if (fb_config.mode == FRAME_BOOST_DISABLED)
+		return;
+
+	now = ktime_get();
+	expire = ktime_add_ms(now, fb_touch_boost.duration_ms);
+
+	preempt_disable();
+	for_each_online_cpu(cpu) {
+		fbc = &per_cpu(fb_cpu_state, cpu);
+		if (fbc->boosted && ktime_before(now, fbc->boost_end))
+			continue;
+		fbc->boosted = true;
+		fbc->boost_start = now;
+		fbc->boost_end = expire;
+		fbc->boost_level = fb_touch_boost.boost_prio;
+		atomic64_inc(&fb_stats.boosted_frames);
+	}
+	preempt_enable();
+
+	fb_touch_boost.last_touch = now;
+}
+EXPORT_SYMBOL_GPL(frame_boost_touch_event);
 
 /*
  * frame_boost_cpu_util - Get frame boost utilization for a CPU
@@ -631,6 +676,52 @@ static ssize_t frame_boost_tasks_store(struct kobject *kobj,
 static struct kobj_attribute frame_boost_tasks_attr =
 	__ATTR(tasks, 0644, frame_boost_tasks_show, frame_boost_tasks_store);
 
+
+static ssize_t touch_boost_enabled_show(struct kobject *kobj,
+					struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", fb_touch_boost.enabled);
+}
+
+static ssize_t touch_boost_enabled_store(struct kobject *kobj,
+					 struct kobj_attribute *attr,
+					 const char *buf, size_t count)
+{
+	u32 val;
+	int ret;
+	ret = kstrtou32(buf, 10, &val);
+	if (ret)
+		return ret;
+	fb_touch_boost.enabled = !!val;
+	return count;
+}
+static struct kobj_attribute touch_boost_enabled_attr =
+	__ATTR(touch_boost_enabled, 0644, touch_boost_enabled_show,
+	       touch_boost_enabled_store);
+
+static ssize_t touch_boost_duration_show(struct kobject *kobj,
+					 struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", fb_touch_boost.duration_ms);
+}
+
+static ssize_t touch_boost_duration_store(struct kobject *kobj,
+					  struct kobj_attribute *attr,
+					  const char *buf, size_t count)
+{
+	u32 dur;
+	int ret;
+	ret = kstrtou32(buf, 10, &dur);
+	if (ret)
+		return ret;
+	if (dur > 500)
+		return -EINVAL;
+	fb_touch_boost.duration_ms = dur;
+	return count;
+}
+static struct kobj_attribute touch_boost_duration_attr =
+	__ATTR(touch_boost_duration_ms, 0644, touch_boost_duration_show,
+	       touch_boost_duration_store);
 static struct attribute *frame_boost_attrs[] = {
 	&frame_boost_mode_attr.attr,
 	&frame_boost_target_fps_attr.attr,
@@ -640,6 +731,8 @@ static struct attribute *frame_boost_attrs[] = {
 	&frame_boost_prefer_high_cap_attr.attr,
 	&frame_boost_stats_attr.attr,
 	&frame_boost_tasks_attr.attr,
+	&touch_boost_enabled_attr.attr,
+	&touch_boost_duration_attr.attr,
 	NULL,
 };
 

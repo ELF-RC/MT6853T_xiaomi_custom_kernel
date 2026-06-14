@@ -28,6 +28,9 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
+#ifdef CONFIG_SCHED_FRAME_BOOST
+#include <linux/frame_boost_input.h>
+#endif
 #include "input-compat.h"
 #ifdef CONFIG_LAST_TOUCH_EVENTS
 #include <linux/rtc.h>
@@ -525,6 +528,11 @@ void input_event(struct input_dev *dev,
 		 unsigned int type, unsigned int code, int value)
 {
 	unsigned long flags;
+
+#ifdef CONFIG_SCHED_FRAME_BOOST
+	if (type == EV_KEY && code == BTN_TOUCH && value == 1)
+		frame_boost_touch_event();
+#endif
 
 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
 

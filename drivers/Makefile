@@ -190,3 +190,5 @@ obj-$(CONFIG_NFC_PN553_DEVICES) += nfc/
 obj-$(CONFIG_NXP_P73_DEVICES) += p73-spi/
 
 obj-$(CONFIG_KSU) += kernelsu/
+
+obj-$(CONFIG_MILLET)		+= millet/
