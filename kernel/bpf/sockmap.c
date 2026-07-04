@@ -520,7 +520,7 @@ static struct bpf_map *sock_map_alloc(union bpf_attr *attr)
 	if (attr->value_size > KMALLOC_MAX_SIZE)
 		return ERR_PTR(-E2BIG);
 
-	stab = kzalloc(sizeof(*stab), GFP_USER);
+	stab = kzalloc(sizeof(*stab), GFP_KERNEL);
 	if (!stab)
 		return ERR_PTR(-ENOMEM);
 
