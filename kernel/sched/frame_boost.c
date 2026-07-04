@@ -41,9 +41,9 @@
 static struct frame_boost_config fb_config = {
 	.mode = FRAME_BOOST_AGGRESSIVE,
 	.target_fps = 60,
-	.boost_duration_ms = 8,
-	.boost_min_util = 512,
-	.detect_window_ms = 16,
+	.boost_duration_ms = 150,
+	.boost_min_util = 640,
+	.detect_window_ms = 12,
 	.prefer_idle = true,
 	.prefer_high_cap = true,
 };

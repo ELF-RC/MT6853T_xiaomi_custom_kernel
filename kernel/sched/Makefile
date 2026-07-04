@@ -32,3 +32,7 @@ obj-$(CONFIG_CPU_FREQ) += cpufreq.o
 obj-$(CONFIG_CPU_FREQ_GOV_SCHEDUTIL) += cpufreq_schedutil.o
 obj-$(CONFIG_MEMBARRIER) += membarrier.o
 obj-$(CONFIG_PSI) += psi.o
+
+ccflags-y += -I$(src)/../../drivers/misc/mediatek/include/mt-plat
+ccflags-y += -I$(src)/../../drivers/misc/mediatek/base/power/mcdi/include
+ccflags-y += -I/drivers/misc/mediatek/include/mt-plat
