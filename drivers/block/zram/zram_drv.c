@@ -793,13 +793,13 @@ static ssize_t writeback_store(struct device *dev,
 		bio_init(&bio, &bio_vec, 1);
 		bio_set_dev(&bio, zram->bdev);
 		bio.bi_iter.bi_sector = blk_idx * (PAGE_SIZE >> 9);
-		bio.bi_opf = REQ_OP_WRITE | REQ_SYNC;
+		bio.bi_opf = REQ_OP_WRITE | REQ_BACKGROUND;
 
 		bio_add_page(&bio, bvec.bv_page, bvec.bv_len,
 				bvec.bv_offset);
 		/*
-		 * XXX: A single page IO would be inefficient for write
-		 * but it would be not bad as starter.
+		 * Batch writeback: submit bio without REQ_SYNC for
+		 * better throughput on background I/O.
 		 */
 		err = submit_bio_wait(&bio);
 		if (err) {
@@ -1051,6 +1051,7 @@ static ssize_t max_comp_streams_show(struct device *dev,
 static ssize_t max_comp_streams_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
+	pr_info("zram: max_comp_streams is deprecated with CONFIG_ZRAM_MULTI_COMP\n");
 	return len;
 }
 
@@ -1248,6 +1249,36 @@ static ssize_t compact_store(struct device *dev,
 	zs_compact(zram->mem_pool);
 	up_read(&zram->init_lock);
 
+	return len;
+}
+
+static ssize_t clear_incompressible_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	struct zram *zram = dev_to_zram(dev);
+	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
+	unsigned long index;
+	unsigned long cleared = 0;
+
+	down_read(&zram->init_lock);
+	if (!init_done(zram)) {
+		up_read(&zram->init_lock);
+		return -EINVAL;
+	}
+
+	for (index = 0; index < nr_pages; index++) {
+		zram_slot_lock(zram, index);
+		if (zram_allocated(zram, index) &&
+		    zram_test_flag(zram, index, ZRAM_INCOMPRESSIBLE)) {
+			zram_clear_flag(zram, index, ZRAM_INCOMPRESSIBLE);
+			cleared++;
+		}
+		zram_slot_unlock(zram, index);
+	}
+
+	up_read(&zram->init_lock);
+
+	pr_info("zram: cleared %lu incompressible pages\n", cleared);
 	return len;
 }
 
@@ -2422,6 +2453,7 @@ static const struct block_device_operations zram_devops = {
 };
 
 static DEVICE_ATTR_WO(compact);
+static DEVICE_ATTR_WO(clear_incompressible);
 static DEVICE_ATTR_RW(disksize);
 static DEVICE_ATTR_RO(initstate);
 static DEVICE_ATTR_WO(reset);
@@ -2446,6 +2478,7 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_initstate.attr,
 	&dev_attr_reset.attr,
 	&dev_attr_compact.attr,
+	&dev_attr_clear_incompressible.attr,
 	&dev_attr_mem_limit.attr,
 	&dev_attr_mem_used_max.attr,
 	&dev_attr_idle.attr,
