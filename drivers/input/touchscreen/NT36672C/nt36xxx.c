@@ -106,7 +106,7 @@ const uint16_t gesture_key_array[] = {
 const struct mt_chip_conf spi_ctrdata = {
 	.setuptime = 25,
 	.holdtime = 25,
-	.high_time = 5,		/* 10MHz (SPI_SPEED=100M / (high_time+low_time(10ns))) */
+	.high_time = 3,		/* 19.2MHz (SPI_SPEED=100M / (high_time+low_time(10ns))) */
 	.low_time = 5,
 	.cs_idletime = 2,
 	.ulthgh_thrsh = 0,
