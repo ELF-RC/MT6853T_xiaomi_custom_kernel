@@ -40,7 +40,7 @@ struct bpf_map *bpf_map_meta_alloc(int inner_map_ufd)
 	if (inner_map->ops == &array_map_ops)
 		inner_map_meta_size = sizeof(struct bpf_array);
 
-	inner_map_meta = kzalloc(inner_map_meta_size, GFP_USER);
+	inner_map_meta = kzalloc(inner_map_meta_size, GFP_KERNEL);
 	if (!inner_map_meta) {
 		fdput(f);
 		return ERR_PTR(-ENOMEM);

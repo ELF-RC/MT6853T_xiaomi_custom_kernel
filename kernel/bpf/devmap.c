@@ -89,7 +89,7 @@ static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
 	    attr->value_size != 4 || attr->map_flags & ~DEV_CREATE_FLAG_MASK)
 		return ERR_PTR(-EINVAL);
 
-	dtab = kzalloc(sizeof(*dtab), GFP_USER);
+	dtab = kzalloc(sizeof(*dtab), GFP_KERNEL);
 	if (!dtab)
 		return ERR_PTR(-ENOMEM);
 

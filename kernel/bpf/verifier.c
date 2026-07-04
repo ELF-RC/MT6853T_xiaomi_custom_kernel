@@ -4657,6 +4657,10 @@ static struct bpf_prog *bpf_patch_insn_data(struct bpf_verifier_env *env, u32 of
 	new_prog = bpf_patch_insn_single(env->prog, off, patch, len);
 	if (!new_prog)
 		return NULL;
+	/* bpf_prog_realloc may have freed env->prog, so update it
+	 * before calling adjust_insn_aux_data to avoid use-after-free.
+	 */
+	env->prog = new_prog;
 	if (adjust_insn_aux_data(env, new_prog->len, off, len))
 		return NULL;
 	return new_prog;
@@ -5133,7 +5137,7 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr)
 
 	env->explored_states = kcalloc(env->prog->len,
 				       sizeof(struct bpf_verifier_state_list *),
-				       GFP_USER);
+				       GFP_KERNEL);
 	ret = -ENOMEM;
 	if (!env->explored_states)
 		goto skip_full_check;

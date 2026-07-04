@@ -197,7 +197,7 @@ bpf_lookup(struct inode *dir, struct dentry *dentry, unsigned flags)
 static int bpf_symlink(struct inode *dir, struct dentry *dentry,
 		       const char *target)
 {
-	char *link = kstrdup(target, GFP_USER | __GFP_NOWARN);
+	char *link = kstrdup(target, GFP_KERNEL | __GFP_NOWARN);
 	struct inode *inode;
 
 	if (!link)

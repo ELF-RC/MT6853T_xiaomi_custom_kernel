@@ -305,7 +305,7 @@ struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 	 * last page could have large enough tailroom.
 	 */
 	prog_adj = bpf_prog_realloc(prog, bpf_prog_size(insn_adj_cnt),
-				    GFP_USER);
+				    GFP_KERNEL);
 	if (!prog_adj)
 		return NULL;
 
@@ -828,7 +828,7 @@ struct bpf_prog *bpf_jit_blind_constants(struct bpf_prog *prog)
 	if (!bpf_jit_blinding_enabled())
 		return prog;
 
-	clone = bpf_prog_clone_create(prog, GFP_USER);
+	clone = bpf_prog_clone_create(prog, GFP_KERNEL);
 	if (!clone)
 		return ERR_PTR(-ENOMEM);
 

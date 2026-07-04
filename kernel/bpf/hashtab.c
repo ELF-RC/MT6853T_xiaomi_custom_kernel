@@ -154,7 +154,7 @@ static int prealloc_init(struct bpf_htab *htab)
 		u32 size = round_up(htab->map.value_size, 8);
 		void __percpu *pptr;
 
-		pptr = __alloc_percpu_gfp(size, 8, GFP_USER | __GFP_NOWARN);
+		pptr = __alloc_percpu_gfp(size, 8, GFP_KERNEL | __GFP_NOWARN);
 		if (!pptr)
 			goto free_elems;
 		htab_elem_set_ptr(get_htab_elem(htab, i), htab->map.key_size,
@@ -208,7 +208,7 @@ static int alloc_extra_elems(struct bpf_htab *htab)
 	int cpu;
 
 	pptr = __alloc_percpu_gfp(sizeof(struct htab_elem *), 8,
-				  GFP_USER | __GFP_NOWARN);
+				  GFP_KERNEL | __GFP_NOWARN);
 	if (!pptr)
 		return -ENOMEM;
 
@@ -267,7 +267,7 @@ static struct bpf_map *htab_map_alloc(union bpf_attr *attr)
 	if (numa_node != NUMA_NO_NODE && (percpu || percpu_lru))
 		return ERR_PTR(-EINVAL);
 
-	htab = kzalloc(sizeof(*htab), GFP_USER);
+	htab = kzalloc(sizeof(*htab), GFP_KERNEL);
 	if (!htab)
 		return ERR_PTR(-ENOMEM);
 
