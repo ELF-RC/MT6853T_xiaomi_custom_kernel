@@ -601,6 +601,8 @@ int ufs_mtk_pltfrm_init(void)
 	struct ufs_mtk_host *host = ufshcd_get_variant(ufs_mtk_hba);
 
 	ufs_mtk_hba->caps |= UFSHCD_CAP_CLK_GATING;
+	ufs_mtk_hba->caps |= UFSHCD_CAP_CLK_SCALING;
+	ufs_mtk_hba->caps |= UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
 	host->vreg_lpm_supported = true;
 
 	return 0;
