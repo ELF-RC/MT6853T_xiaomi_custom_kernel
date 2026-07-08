@@ -17,8 +17,6 @@
 #define ZSTD_DEF_LEVEL	3
 
 struct zstd_ctx {
-	void *cwksp;
-	void *dwksp;
 	zstd_cctx *cctx;
 	zstd_dctx *dctx;
 };
@@ -26,58 +24,77 @@ struct zstd_ctx {
 static int zstd_comp_init(struct zstd_ctx *ctx)
 {
 	zstd_parameters params = zstd_get_params(ZSTD_DEF_LEVEL, 0);
-	size_t wksp_size = zstd_cctx_workspace_bound(&params.cParams);
 
 	/*
-	 * zstd 1.5.2's static CCtx requires substantial workspace for
-	 * internal structures (match tables, entropy tables, etc).
-	 * The estimate from zstd_cctx_workspace_bound is a minimum;
-	 * add significant headroom to avoid buffer overflow.
+	 * Create a dynamic compression context. ZSTD_createCCtx() uses
+	 * kvmalloc(GFP_KERNEL) internally, which is safe during init
+	 * (process context).
+	 *
+	 * ZSTD_initStaticCCtx() (the alternative) embeds the CCtx into a
+	 * pre-allocated vmalloc buffer and relies on the cwksp allocator
+	 * to carve out space for all internal structures. When
+	 * ZSTD_resetCCtx_internal() writes to the CCtx fields (e.g.
+	 * isFirstBlock) it may hit a page mapped read-only due to the
+	 * interaction between cwksp alignment and the vmalloc PMD block
+	 * permissions. This causes a "write to read-only memory" panic
+	 * on arm64 with certain vmalloc layouts.
+	 *
+	 * Using ZSTD_createCCtx() keeps the CCtx in its own writable
+	 * allocation, avoiding the problem entirely.
 	 */
-	wksp_size += 262144; /* 256KB headroom for safety */
-
-	ctx->cwksp = vzalloc(wksp_size);
-	if (!ctx->cwksp)
+	ctx->cctx = ZSTD_createCCtx();
+	if (!ctx->cctx)
 		return -ENOMEM;
 
-	ctx->cctx = zstd_init_cctx(ctx->cwksp, wksp_size);
-	if (!ctx->cctx) {
-		vfree(ctx->cwksp);
+	/*
+	 * Pre-allocate the internal workspace by setting the compression
+	 * level. This ensures ZSTD_compressCCtx() won't try to allocate
+	 * memory during compression (zram disables preemption).
+	 */
+	if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx->cctx,
+			ZSTD_c_compressionLevel, ZSTD_DEF_LEVEL))) {
+		ZSTD_freeCCtx(ctx->cctx);
+		ctx->cctx = NULL;
 		return -EINVAL;
 	}
+
+	/*
+	 * Also set windowLog to ensure the workspace is sized for the
+	 * actual parameters we'll use (compressionLevel alone might pick
+	 * different internal parameters based on source size).
+	 */
+	if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx->cctx,
+			ZSTD_c_windowLog, params.cParams.windowLog))) {
+		ZSTD_freeCCtx(ctx->cctx);
+		ctx->cctx = NULL;
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
 static int zstd_decomp_init(struct zstd_ctx *ctx)
 {
-	size_t wksp_size = zstd_dctx_workspace_bound();
-
-	/* Add headroom for safety */
-	wksp_size += 65536;
-
-	ctx->dwksp = vzalloc(wksp_size);
-	if (!ctx->dwksp)
+	/*
+	 * ZSTD_DCtx has workspace arrays embedded in the struct,
+	 * so no lazy allocation happens during decompression.
+	 * ZSTD_createDCtx() is safe for atomic context.
+	 */
+	ctx->dctx = ZSTD_createDCtx();
+	if (!ctx->dctx)
 		return -ENOMEM;
-
-	ctx->dctx = zstd_init_dctx(ctx->dwksp, wksp_size);
-	if (!ctx->dctx) {
-		vfree(ctx->dwksp);
-		return -EINVAL;
-	}
 	return 0;
 }
 
 static void zstd_comp_exit(struct zstd_ctx *ctx)
 {
-	vfree(ctx->cwksp);
-	ctx->cwksp = NULL;
+	ZSTD_freeCCtx(ctx->cctx);
 	ctx->cctx = NULL;
 }
 
 static void zstd_decomp_exit(struct zstd_ctx *ctx)
 {
-	vfree(ctx->dwksp);
-	ctx->dwksp = NULL;
+	ZSTD_freeDCtx(ctx->dctx);
 	ctx->dctx = NULL;
 }
 
@@ -138,13 +155,6 @@ static int __zstd_compress(const u8 *src, unsigned int slen,
 	struct zstd_ctx *zctx = ctx;
 	size_t out_len;
 
-	/*
-	 * Use ZSTD_compressCCtx directly instead of zstd_compress_cctx().
-	 * The kernel wrapper calls zstd_cctx_init() which calls
-	 * ZSTD_CCtx_reset() - this crashes on static CCtx in zstd 1.5.2.
-	 * ZSTD_compressCCtx() calls ZSTD_compress_usingDict() which does
-	 * NOT call reset, making it safe for static contexts.
-	 */
 	out_len = ZSTD_compressCCtx(zctx->cctx, dst, *dlen, src, slen,
 				    ZSTD_DEF_LEVEL);
 	if (zstd_is_error(out_len))
@@ -160,11 +170,8 @@ static int __zstd_decompress(const u8 *src, unsigned int slen,
 	size_t out_len;
 
 	/*
-	 * Use ZSTD_decompressDCtx directly instead of zstd_decompress_dctx().
-	 * The kernel wrapper also calls into the same path, but this ensures
-	 * we use the pre-allocated static DCtx, avoiding kmalloc in the
-	 * swap read path which would trigger direct reclaim and deadlock
-	 * with the GPU shrinker.
+	 * ZSTD_decompressDCtx() internally calls ZSTD_decompress_usingDict()
+	 * which resets the session, so no explicit reset is needed here.
 	 */
 	out_len = ZSTD_decompressDCtx(zctx->dctx, dst, *dlen, src, slen);
 	if (zstd_is_error(out_len))
@@ -202,7 +209,10 @@ static int zstd_sdecompress(struct crypto_scomp *tfm, const u8 *src,
 static struct crypto_alg alg = {
 	.cra_name		= "zstd",
 	.cra_flags		= CRYPTO_ALG_TYPE_COMPRESS,
+	.cra_ctxsize		= sizeof(struct zstd_ctx),
 	.cra_module		= THIS_MODULE,
+	.cra_init		= zstd_init,
+	.cra_exit		= zstd_exit,
 	.cra_u			= { .compress = {
 	.coa_compress		= zstd_compress,
 	.coa_decompress		= zstd_decompress } }
