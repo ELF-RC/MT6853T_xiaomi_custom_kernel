@@ -49,6 +49,7 @@ jobs:
           git clone https://github.com/ELF-RC/android_kernel4x_tools.git tooltmp
           
       - name: Processing Submodules
+        if: matrix.branch == 'KernelSU'
         run: |
           git submodule update --init --remote --rebase --recursive KernelSU
           
