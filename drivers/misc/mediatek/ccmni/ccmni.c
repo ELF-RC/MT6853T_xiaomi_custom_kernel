@@ -66,11 +66,12 @@ struct ccmni_ctl_block *ccmni_ctl_blk[MAX_MD_NUM];
 
 /* Time in ns. This number must be less than 500ms. */
 #ifdef ENABLE_WQ_GRO
-long int gro_flush_timer __read_mostly = 2000000L;
+long int gro_flush_timer __read_mostly = 10000000L;
 #else
 long int gro_flush_timer;
 #endif
-
+module_param(gro_flush_timer, long, 0644);
+MODULE_PARM_DESC(gro_flush_timer, "GRO flush timer in ns (max 500ms)");
 #define APP_VIP_MARK		0x80000000
 #define DEV_OPEN                1
 #define DEV_CLOSE               0
@@ -1552,7 +1553,7 @@ int ccmni_rx_list_push(int md_id, int ccmni_idx, struct list_head *head,
 #endif
 		}
 
-	__pm_wakeup_event(&ctlb->ccmni_wakelock, jiffies_to_msecs(HZ));
+	__pm_wakeup_event(&ctlb->ccmni_wakelock, jiffies_to_msecs(HZ/4));
 
 	return 0;
 }
@@ -1666,7 +1667,7 @@ static int ccmni_rx_callback(int md_id, int ccmni_idx, struct sk_buff *skb,
 	}
 #endif
 
-	__pm_wakeup_event(&ctlb->ccmni_wakelock, jiffies_to_msecs(HZ));
+	__pm_wakeup_event(&ctlb->ccmni_wakelock, jiffies_to_msecs(HZ/4));
 
 	return 0;
 }
