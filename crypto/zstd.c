@@ -17,35 +17,85 @@
 #define ZSTD_DEF_LEVEL	3
 
 struct zstd_ctx {
-	void *cwksp;
-	void *dwksp;
+	zstd_cctx *cctx;
+	zstd_dctx *dctx;
 };
 
 static int zstd_comp_init(struct zstd_ctx *ctx)
 {
+	zstd_parameters params = zstd_get_params(ZSTD_DEF_LEVEL, 0);
+
 	/*
-	 * zstd 1.5.2+ uses dynamic allocation internally.
-	 * We just need to ensure the context struct exists.
-	 * The workspace is managed by zstd_createCCtx / ZSTD_compress.
+	 * Create a dynamic compression context. ZSTD_createCCtx() uses
+	 * kvmalloc(GFP_KERNEL) internally, which is safe during init
+	 * (process context).
+	 *
+	 * ZSTD_initStaticCCtx() (the alternative) embeds the CCtx into a
+	 * pre-allocated vmalloc buffer and relies on the cwksp allocator
+	 * to carve out space for all internal structures. When
+	 * ZSTD_resetCCtx_internal() writes to the CCtx fields (e.g.
+	 * isFirstBlock) it may hit a page mapped read-only due to the
+	 * interaction between cwksp alignment and the vmalloc PMD block
+	 * permissions. This causes a "write to read-only memory" panic
+	 * on arm64 with certain vmalloc layouts.
+	 *
+	 * Using ZSTD_createCCtx() keeps the CCtx in its own writable
+	 * allocation, avoiding the problem entirely.
 	 */
-	ctx->cwksp = NULL;
+	ctx->cctx = ZSTD_createCCtx();
+	if (!ctx->cctx)
+		return -ENOMEM;
+
+	/*
+	 * Pre-allocate the internal workspace by setting the compression
+	 * level. This ensures ZSTD_compressCCtx() won't try to allocate
+	 * memory during compression (zram disables preemption).
+	 */
+	if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx->cctx,
+			ZSTD_c_compressionLevel, ZSTD_DEF_LEVEL))) {
+		ZSTD_freeCCtx(ctx->cctx);
+		ctx->cctx = NULL;
+		return -EINVAL;
+	}
+
+	/*
+	 * Also set windowLog to ensure the workspace is sized for the
+	 * actual parameters we'll use (compressionLevel alone might pick
+	 * different internal parameters based on source size).
+	 */
+	if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx->cctx,
+			ZSTD_c_windowLog, params.cParams.windowLog))) {
+		ZSTD_freeCCtx(ctx->cctx);
+		ctx->cctx = NULL;
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
 static int zstd_decomp_init(struct zstd_ctx *ctx)
 {
-	ctx->dwksp = NULL;
+	/*
+	 * ZSTD_DCtx has workspace arrays embedded in the struct,
+	 * so no lazy allocation happens during decompression.
+	 * ZSTD_createDCtx() is safe for atomic context.
+	 */
+	ctx->dctx = ZSTD_createDCtx();
+	if (!ctx->dctx)
+		return -ENOMEM;
 	return 0;
 }
 
 static void zstd_comp_exit(struct zstd_ctx *ctx)
 {
-	ctx->cwksp = NULL;
+	ZSTD_freeCCtx(ctx->cctx);
+	ctx->cctx = NULL;
 }
 
 static void zstd_decomp_exit(struct zstd_ctx *ctx)
 {
-	ctx->dwksp = NULL;
+	ZSTD_freeDCtx(ctx->dctx);
+	ctx->dctx = NULL;
 }
 
 static int __zstd_init(void *ctx)
@@ -63,7 +113,18 @@ static int __zstd_init(void *ctx)
 
 static void *zstd_alloc_ctx(struct crypto_scomp *tfm)
 {
-	return kzalloc(sizeof(struct zstd_ctx), GFP_KERNEL);
+	struct zstd_ctx *ctx;
+
+	ctx = kzalloc(sizeof(struct zstd_ctx), GFP_KERNEL);
+	if (!ctx)
+		return NULL;
+
+	if (__zstd_init(ctx)) {
+		kfree(ctx);
+		return NULL;
+	}
+
+	return ctx;
 }
 
 static int zstd_init(struct crypto_tfm *tfm)
@@ -79,6 +140,7 @@ static void __zstd_exit(void *ctx)
 
 static void zstd_free_ctx(struct crypto_scomp *tfm, void *ctx)
 {
+	__zstd_exit(ctx);
 	kfree(ctx);
 }
 
@@ -90,9 +152,11 @@ static void zstd_exit(struct crypto_tfm *tfm)
 static int __zstd_compress(const u8 *src, unsigned int slen,
 			   u8 *dst, unsigned int *dlen, void *ctx)
 {
+	struct zstd_ctx *zctx = ctx;
 	size_t out_len;
 
-	out_len = ZSTD_compress(dst, *dlen, src, slen, ZSTD_DEF_LEVEL);
+	out_len = ZSTD_compressCCtx(zctx->cctx, dst, *dlen, src, slen,
+				    ZSTD_DEF_LEVEL);
 	if (zstd_is_error(out_len))
 		return -EINVAL;
 	*dlen = out_len;
@@ -102,9 +166,14 @@ static int __zstd_compress(const u8 *src, unsigned int slen,
 static int __zstd_decompress(const u8 *src, unsigned int slen,
 			     u8 *dst, unsigned int *dlen, void *ctx)
 {
+	struct zstd_ctx *zctx = ctx;
 	size_t out_len;
 
-	out_len = ZSTD_decompress(dst, *dlen, src, slen);
+	/*
+	 * ZSTD_decompressDCtx() internally calls ZSTD_decompress_usingDict()
+	 * which resets the session, so no explicit reset is needed here.
+	 */
+	out_len = ZSTD_decompressDCtx(zctx->dctx, dst, *dlen, src, slen);
 	if (zstd_is_error(out_len))
 		return -EINVAL;
 	*dlen = out_len;
@@ -140,7 +209,10 @@ static int zstd_sdecompress(struct crypto_scomp *tfm, const u8 *src,
 static struct crypto_alg alg = {
 	.cra_name		= "zstd",
 	.cra_flags		= CRYPTO_ALG_TYPE_COMPRESS,
+	.cra_ctxsize		= sizeof(struct zstd_ctx),
 	.cra_module		= THIS_MODULE,
+	.cra_init		= zstd_init,
+	.cra_exit		= zstd_exit,
 	.cra_u			= { .compress = {
 	.coa_compress		= zstd_compress,
 	.coa_decompress		= zstd_decompress } }
