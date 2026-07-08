@@ -46,6 +46,7 @@ int page_cluster;
 static DEFINE_PER_CPU(struct pagevec, lru_add_pvec);
 static DEFINE_PER_CPU(struct pagevec, lru_rotate_pvecs);
 static DEFINE_PER_CPU(struct pagevec, lru_deactivate_file_pvecs);
+static DEFINE_PER_CPU(struct pagevec, lru_deactivate_pvecs);
 static DEFINE_PER_CPU(struct pagevec, lru_lazyfree_pvecs);
 #ifdef CONFIG_SMP
 static DEFINE_PER_CPU(struct pagevec, activate_page_pvecs);
@@ -570,6 +571,32 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 	update_page_reclaim_stat(lruvec, file, 0);
 }
 
+static void lru_deactivate_fn(struct page *page, struct lruvec *lruvec,
+			    void *arg)
+{
+	int lru, file;
+	bool active;
+
+	if (!PageLRU(page))
+		return;
+
+	if (PageUnevictable(page))
+		return;
+
+	active = PageActive(page);
+	file = page_is_file_cache(page);
+	lru = page_lru_base_type(page);
+
+	del_page_from_lru_list(page, lruvec, lru + active);
+	ClearPageActive(page);
+	ClearPageReferenced(page);
+	add_page_to_lru_list(page, lruvec, lru);
+
+	if (active)
+		__count_vm_event(PGDEACTIVATE);
+	update_page_reclaim_stat(lruvec, file, 0);
+}
+
 
 static void lru_lazyfree_fn(struct page *page, struct lruvec *lruvec,
 			    void *arg)
@@ -656,6 +683,25 @@ void deactivate_file_page(struct page *page)
 }
 
 /**
+ * deactivate_page - deactivate a page from the LRU
+ * @page: page to deactivate
+ *
+ * deactivate_page() moves @page from the active to inactive list,
+ * helping to accelerate reclaim of the page.
+ */
+void deactivate_page(struct page *page)
+{
+	if (PageLRU(page) && PageActive(page) && !PageUnevictable(page)) {
+		struct pagevec *pvec = &get_cpu_var(lru_deactivate_pvecs);
+
+		get_page(page);
+		if (!pagevec_add(pvec, page) || PageCompound(page))
+			pagevec_lru_move_fn(pvec, lru_deactivate_fn, NULL);
+		put_cpu_var(lru_deactivate_pvecs);
+	}
+}
+
+/**
  * mark_page_lazyfree - make an anon page lazyfree
  * @page: page to deactivate
  *
@@ -710,6 +756,7 @@ void lru_add_drain_all_cpuslocked(void)
 		if (pagevec_count(&per_cpu(lru_add_pvec, cpu)) ||
 		    pagevec_count(&per_cpu(lru_rotate_pvecs, cpu)) ||
 		    pagevec_count(&per_cpu(lru_deactivate_file_pvecs, cpu)) ||
+		    pagevec_count(&per_cpu(lru_deactivate_pvecs, cpu)) ||
 		    pagevec_count(&per_cpu(lru_lazyfree_pvecs, cpu)) ||
 		    need_activate_page_drain(cpu)) {
 			INIT_WORK(work, lru_add_drain_per_cpu);
