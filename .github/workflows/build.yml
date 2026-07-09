@@ -5,7 +5,7 @@ on:
         LOCALVERSIONNAME:
             description: 'Kernel Local Version Name'
             required: true
-            default: '' 
+            default: ''
 
 jobs:
   build:
@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch: [KernelSU, main, development]
+        branch: [KernelSU, Resukisu, main, development]
 
     steps:
 
@@ -32,48 +32,60 @@ jobs:
         run: |
           sudo rm -rf "/usr/local/share/boost"
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          
+
       - name: Initialize Compilation Environment
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential lld libssl-dev libelf-dev flex bison bc curl git zip llvm -y
+          sudo apt-get install build-essential lld libssl-dev libelf-dev flex bison bc curl git zip llvm ccache -y
           echo "BUILD_TIME=$(TZ=Asia/Shanghai date "+%Y%m%d%H%M")" >> $GITHUB_ENV
-          
+
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: ${{ matrix.branch }}
+          submodules: recursive
 
       - name: Get Toolchain
         run: |
-          git clone https://github.com/ELF-RC/android_kernel4x_tools.git tooltmp
-          
-      - name: Processing Submodules
-        if: matrix.branch == 'KernelSU'
-        run: |
-          git submodule update --init --remote --rebase --recursive KernelSU
-          
+          git clone --depth=1 https://github.com/ELF-RC/android_kernel4x_tools.git tooltmp
+
       - name: Build Kernel
         run: |
           export KBUILD_BUILD_HOST=Github-Action
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
           export PATH="$GITHUB_WORKSPACE/tooltmp/clang/host/linux-x86/clang-r428724/bin:$PATH"
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CROSS_COMPILE=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu- CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi/bin/arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++ LLVM_AR=llvm-ar LLVM_DIS=llvm-dis cannon_defconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CROSS_COMPILE=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu- CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi/bin/arm-linux-gnueabi- AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++ LLVM_AR=llvm-ar LLVM_DIS=llvm-dis
+          export CROSS_COMPILE=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi/bin/arm-linux-gnueabi-
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
+            HOSTCC=clang HOSTCXX=clang++ LLVM_IAS=1 \
+            KCFLAGS="--target=aarch64-linux-gnu -w" \
+            cannon_defconfig
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
+            HOSTCC=clang HOSTCXX=clang++ LLVM_IAS=1 \
+            KCFLAGS="--target=aarch64-linux-gnu -w"
 
       - name: Pack Kernel with AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 -b master AK3
-          cp out/arch/arm64/boot/Image.gz AK3/
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git -b master AK3
+          cp out/arch/arm64/boot/Image.gz-dtb AK3/
           cd AK3
-          sed -i 's|kernel.string=.*|kernel.string=Xiaomi Custom Kernel By ELF-RC (${{ matrix.branch }})|' anykernel.sh
-          sed -i 's|device.name1=.*|device.name1=cannon|' anykernel.sh
-          sed -i 's|device.name2=.*|device.name2=cannong|' anykernel.sh
-          sed -i 's|BLOCK=.*|BLOCK=/dev/block/by-name/boot;|' anykernel.sh
+          sed -i "s|kernel.string=.*|kernel.string=Xiaomi Custom Kernel (${{ matrix.branch }})|" anykernel.sh
+          sed -i "s|device.name1=.*|device.name1=cannon|" anykernel.sh
+          sed -i "s|device.name2=.*|device.name2=cannong|" anykernel.sh
+          sed -i "s|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1|" anykernel.sh
+          sed -i "s|BLOCK=.*|BLOCK=auto;|" anykernel.sh
           rm -rf .git README.md LICENSE
 
       - name: Upload Kernel Package
         uses: actions/upload-artifact@v4
         with:
-          name: cannon_customKernel_${{ github.event.inputs.LOCALVERSIONNAME }}_${{ matrix.branch }}_${{ github.actor }}
+          name: cannon_${{ matrix.branch }}_${{ github.event.inputs.LOCALVERSIONNAME }}_${{ github.actor }}
           path: AK3/
