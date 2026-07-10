@@ -1840,6 +1840,14 @@ static void compact_nodes(void)
 int sysctl_compact_memory;
 
 /*
+ * Controls proactive compaction in kcompactd.
+ * Value 0-100: interval in jiffies between proactive checks.
+ * 0 = disabled, 1 = aggressive, 100 = very conservative.
+ * Default 10 (100ms at HZ=100).
+ */
+int sysctl_compaction_proactiveness __read_mostly = 10;
+
+/*
  * This is the entry point for compacting all nodes via
  * /proc/sys/vm/compact_memory
  */
@@ -2011,6 +2019,29 @@ void wakeup_kcompactd(pg_data_t *pgdat, int order, int classzone_idx)
 }
 
 /*
+ * Proactive compaction: check if any zone in this node has fragmentation
+ * that could benefit from background compaction.
+ */
+static bool kcompactd_proactive_check(pg_data_t *pgdat)
+{
+	int zoneid;
+	struct zone *zone;
+	enum zone_type classzone_idx = pgdat->nr_zones - 1;
+
+	for (zoneid = 0; zoneid <= classzone_idx; zoneid++) {
+		zone = &pgdat->node_zones[zoneid];
+
+		if (!populated_zone(zone))
+			continue;
+
+		if (compaction_suitable(zone, PAGE_ALLOC_COSTLY_ORDER, 0,
+					classzone_idx) == COMPACT_CONTINUE)
+			return true;
+	}
+	return false;
+}
+
+/*
  * The background compaction daemon, started as a kernel thread
  * from the init process.
  */
@@ -2033,8 +2064,26 @@ static int kcompactd(void *p)
 		unsigned long pflags;
 
 		trace_mm_compaction_kcompactd_sleep(pgdat->node_id);
-		wait_event_freezable(pgdat->kcompactd_wait,
+
+		if (sysctl_compaction_proactiveness > 0 &&
+		    !kcompactd_work_requested(pgdat)) {
+			/* Proactive: wake up periodically */
+			freezable_schedule_timeout(
+				sysctl_compaction_proactiveness);
+
+			/* Check if proactive compaction is needed */
+			if (!kcompactd_work_requested(pgdat) &&
+			    kcompactd_proactive_check(pgdat)) {
+				pgdat->kcompactd_max_order =
+					PAGE_ALLOC_COSTLY_ORDER;
+				pgdat->kcompactd_classzone_idx =
+					pgdat->nr_zones - 1;
+			}
+		} else {
+			/* Normal: wait for explicit work request */
+			wait_event_freezable(pgdat->kcompactd_wait,
 				kcompactd_work_requested(pgdat));
+		}
 
 		psi_memstall_enter(&pflags);
 		kcompactd_do_work(pgdat);

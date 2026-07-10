@@ -225,6 +225,8 @@ static inline void wakeup_kcompactd(pg_data_t *pgdat, int order, int classzone_i
 {
 }
 
+extern int sysctl_compaction_proactiveness;
+
 #endif /* CONFIG_COMPACTION */
 
 #if defined(CONFIG_COMPACTION) && defined(CONFIG_SYSFS) && defined(CONFIG_NUMA)
