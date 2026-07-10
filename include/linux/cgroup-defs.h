@@ -386,7 +386,9 @@ struct cgroup {
 
 	/* cgroup v2 freezer state */
 	struct {
-		bool freeze;		/* whether the cgroup is frozen */
+		bool freeze;		/* userspace requested frozen state */
+		bool e_freeze;		/* effective frozen state incl. ancestors */
+		bool frozen;		/* all tasks in subtree are frozen */
 	} freezer;
 
 	/* ids of the ancestors at each level including self */
