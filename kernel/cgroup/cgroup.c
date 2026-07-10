@@ -4664,7 +4664,7 @@ static int cgroup_freeze(struct cgroup *cgrp, bool freeze);
 
 static void cgroup_update_frozen(struct cgroup *cgrp)
 {
-	bool frozen = cgrp->freezer.e_freeze;
+	bool all_frozen = cgrp->freezer.e_freeze;
 	struct css_task_iter it;
 	struct task_struct *task;
 
@@ -4677,7 +4677,7 @@ static void cgroup_update_frozen(struct cgroup *cgrp)
 		if ((task->flags & PF_KTHREAD))
 			continue;
 		if (!frozen(task)) {
-			frozen = false;
+			all_frozen = false;
 			goto out_iter;
 		}
 	}
@@ -4685,10 +4685,10 @@ out_iter:
 	css_task_iter_end(&it);
 	rcu_read_unlock();
 
-	if (cgrp->freezer.frozen == frozen)
+	if (cgrp->freezer.frozen == all_frozen)
 		return;
 
-	cgrp->freezer.frozen = frozen;
+	cgrp->freezer.frozen = all_frozen;
 	cgroup_file_notify(&cgrp->events_file);
 }
 
@@ -4779,7 +4779,7 @@ static int cgroup_freeze_open(struct inode *inode, struct file *file)
 
 static int cgroup_freeze(struct cgroup *cgrp, bool freeze)
 {
-	struct cgroup *pos;
+	struct cgroup_subsys_state *pos;
 	bool ancestor_freeze;
 
 	lockdep_assert_held(&cgroup_mutex);
