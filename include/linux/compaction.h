@@ -106,6 +106,8 @@ extern void compaction_defer_reset(struct zone *zone, int order,
 				bool alloc_success);
 extern bool compaction_restarting(struct zone *zone, int order);
 
+extern int sysctl_compaction_proactiveness;
+
 /* Compaction has made some progress and retrying makes sense */
 static inline bool compaction_made_progress(enum compact_result result)
 {
@@ -224,8 +226,6 @@ static inline void kcompactd_stop(int nid)
 static inline void wakeup_kcompactd(pg_data_t *pgdat, int order, int classzone_idx)
 {
 }
-
-extern int sysctl_compaction_proactiveness;
 
 #endif /* CONFIG_COMPACTION */
 
