@@ -79,7 +79,7 @@ static inline int arch_spin_trylock(arch_spinlock_t *lock)
 	"1:	ldaxr	%w0, %2\n"
 	"	eor	%w1, %w0, %w0, ror #16\n"
 	"	cbnz	%w1, 2f\n"
-	"	add	%w0, %w0, %3\n"
+	"	add	%w0, %w0, %w3\n"
 	"	stxr	%w1, %w0, %2\n"
 	"	cbnz	%w1, 1b\n"
 	"2:",
@@ -87,9 +87,9 @@ static inline int arch_spin_trylock(arch_spinlock_t *lock)
 	"	ldr	%w0, %2\n"
 	"	eor	%w1, %w0, %w0, ror #16\n"
 	"	cbnz	%w1, 1f\n"
-	"	add	%w1, %w0, %3\n"
+	"	add	%w1, %w0, %w3\n"
 	"	casa	%w0, %w1, %2\n"
-	"	sub	%w1, %w1, %3\n"
+	"	sub	%w1, %w1, %w3\n"
 	"	eor	%w1, %w1, %w0\n"
 	"1:")
 	: "=&r" (lockval), "=&r" (tmp), "+Q" (*lock)
