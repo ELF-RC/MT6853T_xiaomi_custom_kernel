@@ -3388,8 +3388,11 @@ static ssize_t cgroup_max_depth_write(struct kernfs_open_file *of,
 
 static int cgroup_events_show(struct seq_file *seq, void *v)
 {
+	struct cgroup *cgrp = seq_css(seq)->cgroup;
+
 	seq_printf(seq, "populated %d\n",
-		   cgroup_is_populated(seq_css(seq)->cgroup));
+		   cgroup_is_populated(cgrp));
+	seq_printf(seq, "frozen %d\n", cgrp->freezer.frozen);
 	return 0;
 }
 
@@ -4659,6 +4662,36 @@ out_unlock:
 
 static int cgroup_freeze(struct cgroup *cgrp, bool freeze);
 
+static void cgroup_update_frozen(struct cgroup *cgrp)
+{
+	bool frozen = cgrp->freezer.e_freeze;
+	struct css_task_iter it;
+	struct task_struct *task;
+
+	lockdep_assert_held(&cgroup_mutex);
+
+	rcu_read_lock();
+	css_task_iter_start(&cgrp->self, CSS_TASK_ITER_PROCS | CSS_TASK_ITER_THREADED,
+			    &it);
+	while ((task = css_task_iter_next(&it))) {
+		if ((task->flags & PF_KTHREAD))
+			continue;
+		if (!frozen(task)) {
+			frozen = false;
+			goto out_iter;
+		}
+	}
+out_iter:
+	css_task_iter_end(&it);
+	rcu_read_unlock();
+
+	if (cgrp->freezer.frozen == frozen)
+		return;
+
+	cgrp->freezer.frozen = frozen;
+	cgroup_file_notify(&cgrp->events_file);
+}
+
 static void cgroup_freeze_task(struct task_struct *task)
 {
 	unsigned long flags;
@@ -4685,6 +4718,28 @@ static void cgroup_thaw_task(struct task_struct *task)
 	__thaw_task(task);
 unlock:
 	spin_unlock_irqrestore(&task->sighand->siglock, flags);
+}
+
+static void cgroup_do_freeze(struct cgroup *cgrp, bool freeze)
+{
+	struct css_task_iter it;
+	struct task_struct *task;
+
+	lockdep_assert_held(&cgroup_mutex);
+
+	rcu_read_lock();
+	css_task_iter_start(&cgrp->self, CSS_TASK_ITER_PROCS | CSS_TASK_ITER_THREADED,
+			    &it);
+	while ((task = css_task_iter_next(&it))) {
+		if (freeze)
+			cgroup_freeze_task(task);
+		else
+			cgroup_thaw_task(task);
+	}
+	css_task_iter_end(&it);
+	rcu_read_unlock();
+
+	cgroup_update_frozen(cgrp);
 }
 
 static ssize_t cgroup_freeze_write(struct kernfs_open_file *of,
@@ -4724,8 +4779,8 @@ static int cgroup_freeze_open(struct inode *inode, struct file *file)
 
 static int cgroup_freeze(struct cgroup *cgrp, bool freeze)
 {
-	struct cgroup *dsct;
-	struct task_struct *task;
+	struct cgroup *pos;
+	bool ancestor_freeze;
 
 	lockdep_assert_held(&cgroup_mutex);
 
@@ -4733,15 +4788,22 @@ static int cgroup_freeze(struct cgroup *cgrp, bool freeze)
 		return -EINVAL;
 
 	cgrp->freezer.freeze = freeze;
+	ancestor_freeze = cgroup_parent(cgrp) && cgroup_parent(cgrp)->freezer.e_freeze;
 
-	for_each_process(task) {
-		if (task_cgroup(task, 0) != cgrp)
+	css_for_each_descendant_pre(pos, &cgrp->self) {
+		struct cgroup *dsct = pos->cgroup;
+		bool old = dsct->freezer.e_freeze;
+
+		if (dsct == cgrp)
+			dsct->freezer.e_freeze = dsct->freezer.freeze || ancestor_freeze;
+		else
+			dsct->freezer.e_freeze = dsct->freezer.freeze || dsct->self.parent->cgroup->freezer.e_freeze;
+
+		if (old == dsct->freezer.e_freeze)
 			continue;
 
-		if (freeze)
-			cgroup_freeze_task(task);
-		else
-			cgroup_thaw_task(task);
+		cgroup_do_freeze(dsct, dsct->freezer.e_freeze);
+		cgroup_file_notify(&dsct->events_file);
 	}
 
 	return 0;
