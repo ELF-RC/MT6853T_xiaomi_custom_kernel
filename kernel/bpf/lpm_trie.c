@@ -389,125 +389,91 @@ out:
 	return ret;
 }
 
-static int trie_delete_elem(struct bpf_map *map, void *key)
+/* Called from syscall or from eBPF program */
+static int trie_delete_elem(struct bpf_map *map, void *_key)
 {
 	struct lpm_trie *trie = container_of(map, struct lpm_trie, map);
-	struct bpf_lpm_trie_key *key2 = key;
-	struct lpm_trie_node *node, **parent_slot = NULL;
+	struct bpf_lpm_trie_key *key = _key;
+	struct lpm_trie_node __rcu **trim, **trim2;
+	struct lpm_trie_node *node, *parent;
 	unsigned long irq_flags;
 	unsigned int next_bit;
 	size_t matchlen = 0;
-	int ret = -ENOENT;
+	int ret = 0;
 
-	if (key2->prefixlen > trie->max_prefixlen)
+	if (key->prefixlen > trie->max_prefixlen)
 		return -EINVAL;
 
 	raw_spin_lock_irqsave(&trie->lock, irq_flags);
 
-	/* Walk the trie to find the node */
-	node = rcu_dereference_protected(trie->root,
-					lockdep_is_held(&trie->lock));
-	parent_slot = &trie->root;
+	/* Walk the tree looking for an exact key/length match and keeping
+	 * track of the path we traverse. We will need to know the node
+	 * we wish to delete, and the slot that points to the node we want
+	 * to delete. We may also need to know the node's parent and the
+	 * slot that contains it.
+	 */
+	trim = &trie->root;
+	trim2 = trim;
+	parent = NULL;
+	while ((node = rcu_dereference_protected(*trim,
+						 lockdep_is_held(&trie->lock)))) {
+		matchlen = longest_prefix_match(trie, node, key);
 
-	while (node) {
-		matchlen = longest_prefix_match(trie, node, key2);
-
-		if (node->prefixlen == matchlen &&
-		    node->prefixlen == key2->prefixlen) {
-			/* Found the node to delete */
-			struct lpm_trie_node *to_delete = node;
-
-			/* If node has two children, we need to find a
-			 * replacement. Replace with the rightmost node
-			 * of the left subtree.
-			 */
-			if (rcu_access_pointer(node->child[0]) &&
-			    rcu_access_pointer(node->child[1])) {
-				struct lpm_trie_node **left_slot, *left;
-
-				left_slot = &node->child[0];
-				left = rcu_dereference_protected(*left_slot,
-					lockdep_is_held(&trie->lock));
-
-				/* Find the rightmost node of left subtree */
-				while (rcu_access_pointer(left->child[1])) {
-					left_slot = &left->child[1];
-					left = rcu_dereference_protected(
-						*left_slot,
-						lockdep_is_held(&trie->lock));
-				}
-
-				/* Replace to_delete with left */
-				if (left_slot == &node->child[0]) {
-					/* left is direct child */
-					rcu_assign_pointer(left->child[1],
-						node->child[1]);
-					rcu_assign_pointer(*parent_slot, left);
-				} else {
-					/* left is deeper */
-					struct lpm_trie_node *left_parent;
-					struct lpm_trie_node **lp_slot;
-
-					/* Find parent of left */
-					lp_slot = &trie->root;
-					left_parent = rcu_dereference_protected(
-						*lp_slot,
-						lockdep_is_held(&trie->lock));
-
-					while (left_parent != left) {
-						next_bit = extract_bit(
-							left->data,
-							left_parent->prefixlen);
-						lp_slot = &left_parent->child[next_bit];
-						left_parent = rcu_dereference_protected(
-							*lp_slot,
-							lockdep_is_held(&trie->lock));
-					}
-
-					/* Detach left from its parent */
-					rcu_assign_pointer(*lp_slot,
-						left->child[0]);
-
-					/* Put left where to_delete was */
-					rcu_assign_pointer(left->child[0],
-						node->child[0]);
-					rcu_assign_pointer(left->child[1],
-						node->child[1]);
-					rcu_assign_pointer(*parent_slot, left);
-				}
-			} else {
-				/* Node has 0 or 1 child */
-				struct lpm_trie_node *child = NULL;
-
-				if (rcu_access_pointer(node->child[0]))
-					child = rcu_dereference_protected(
-						node->child[0],
-						lockdep_is_held(&trie->lock));
-				else if (rcu_access_pointer(node->child[1]))
-					child = rcu_dereference_protected(
-						node->child[1],
-						lockdep_is_held(&trie->lock));
-
-				rcu_assign_pointer(*parent_slot, child);
-			}
-
-			trie->n_entries--;
-			ret = 0;
-			kfree_rcu(to_delete, rcu);
-			goto out;
-		}
-
-		if (matchlen < node->prefixlen)
+		if (node->prefixlen != matchlen ||
+		    node->prefixlen == key->prefixlen)
 			break;
 
-		parent_slot = &node->child[next_bit =
-			extract_bit(key2->data, node->prefixlen)];
-		node = rcu_dereference_protected(*parent_slot,
-					lockdep_is_held(&trie->lock));
+		parent = node;
+		trim2 = trim;
+		next_bit = extract_bit(key->data, node->prefixlen);
+		trim = &node->child[next_bit];
 	}
+
+	if (!node || node->prefixlen != key->prefixlen ||
+	    node->prefixlen != matchlen ||
+	    (node->flags & LPM_TREE_NODE_FLAG_IM)) {
+		ret = -ENOENT;
+		goto out;
+	}
+
+	trie->n_entries--;
+
+	/* A node with two children is still needed to direct the search. */
+	if (rcu_access_pointer(node->child[0]) &&
+	    rcu_access_pointer(node->child[1])) {
+		node->flags |= LPM_TREE_NODE_FLAG_IM;
+		goto out;
+	}
+
+	/* Remove a now-unnecessary intermediate parent together with a leaf
+	 * and promote the leaf's sibling. This preserves the Patricia trie
+	 * invariant that every intermediate node has exactly two children.
+	 */
+	if (parent && (parent->flags & LPM_TREE_NODE_FLAG_IM) &&
+	    !node->child[0] && !node->child[1]) {
+		if (node == rcu_access_pointer(parent->child[0]))
+			rcu_assign_pointer(*trim2,
+					   rcu_access_pointer(parent->child[1]));
+		else
+			rcu_assign_pointer(*trim2,
+					   rcu_access_pointer(parent->child[0]));
+		kfree_rcu(parent, rcu);
+		kfree_rcu(node, rcu);
+		goto out;
+	}
+
+	/* A real node with at most one child can be replaced by that child. */
+	if (node->child[0])
+		rcu_assign_pointer(*trim, rcu_access_pointer(node->child[0]));
+	else if (node->child[1])
+		rcu_assign_pointer(*trim, rcu_access_pointer(node->child[1]));
+	else
+		RCU_INIT_POINTER(*trim, NULL);
+	kfree_rcu(node, rcu);
 
 out:
 	raw_spin_unlock_irqrestore(&trie->lock, irq_flags);
+
 	return ret;
 }
 
@@ -625,145 +591,93 @@ out:
 	kfree(trie);
 }
 
-static int trie_get_next_key(struct bpf_map *map, void *key, void *next_key)
+static int trie_get_next_key(struct bpf_map *map, void *_key, void *_next_key)
 {
+	struct lpm_trie_node *node, *next_node = NULL, *parent, *search_root;
 	struct lpm_trie *trie = container_of(map, struct lpm_trie, map);
-	struct lpm_trie_node *node, *next = NULL;
-	struct bpf_lpm_trie_key *k = key;
-	struct bpf_lpm_trie_key *nkey = next_key;
+	struct bpf_lpm_trie_key *key = _key, *next_key = _next_key;
+	struct lpm_trie_node **node_stack = NULL;
+	int err = 0, stack_ptr = -1;
+	unsigned int next_bit;
+	size_t matchlen = 0;
 
-	/* If no key, return the first (leftmost) entry */
-	if (!k) {
-		node = rcu_dereference(trie->root);
-		if (!node)
-			return -ENOENT;
+	/* Iterate in postorder so more specific keys precede their prefixes. */
+	search_root = rcu_dereference(trie->root);
+	if (!search_root)
+		return -ENOENT;
 
-		/* Find leftmost non-intermediate node */
-		while (rcu_access_pointer(node->child[0]) ||
-		       rcu_access_pointer(node->child[1])) {
-			struct lpm_trie_node *left, *right;
+	/* BPF_MAP_GET_NEXT_KEY starts over when the supplied key is invalid. */
+	if (!key || key->prefixlen > trie->max_prefixlen)
+		goto find_leftmost;
 
-			left = rcu_dereference(node->child[0]);
-			right = rcu_dereference(node->child[1]);
+	/* Prefix lengths strictly increase down a path. Include both /0 and
+	 * /max_prefixlen in the worst-case stack depth.
+	 */
+	node_stack = kmalloc_array(trie->max_prefixlen + 1,
+				   sizeof(struct lpm_trie_node *),
+				   GFP_ATOMIC | __GFP_NOWARN);
+	if (!node_stack)
+		return -ENOMEM;
 
-			if (left && !(left->flags & LPM_TREE_NODE_FLAG_IM)) {
-				node = left;
-			} else if (right &&
-				   !(right->flags & LPM_TREE_NODE_FLAG_IM)) {
-				node = right;
-			} else if (left) {
-				node = left;
-			} else {
-				node = right;
-			}
-		}
-
-		nkey->prefixlen = node->prefixlen;
-		memcpy(nkey->data, node->data, trie->data_size);
-		return 0;
-	}
-
-	if (k->prefixlen > trie->max_prefixlen)
-		return -EINVAL;
-
-	/* Walk the trie to find the current node */
-	node = rcu_dereference(trie->root);
-	while (node) {
-		size_t matchlen = longest_prefix_match(trie, node, k);
-
-		if (node->prefixlen == matchlen &&
-		    node->prefixlen == k->prefixlen) {
-			/* Found the current node, find the next one */
-
-			/* Try right child first */
-			if (rcu_access_pointer(node->child[1])) {
-				next = rcu_dereference(node->child[1]);
-				while (next) {
-					if (!(next->flags &
-					      LPM_TREE_NODE_FLAG_IM))
-						goto found;
-					if (rcu_access_pointer(next->child[0]))
-						next = rcu_dereference(
-							next->child[0]);
-					else if (rcu_access_pointer(
-							next->child[1]))
-						next = rcu_dereference(
-							next->child[1]);
-					else
-						next = NULL;
-				}
-			}
-
-			/* Walk up and find next sibling */
-			node = rcu_dereference(trie->root);
-			while (node) {
-				matchlen = longest_prefix_match(trie, node, k);
-
-				if (node->prefixlen == matchlen &&
-				    node->prefixlen == k->prefixlen) {
-					/* Current node, no next sibling */
-					break;
-				}
-
-				if (matchlen < node->prefixlen)
-					break;
-
-				{
-					unsigned int next_bit =
-						extract_bit(k->data,
-							    node->prefixlen);
-					struct lpm_trie_node *sibling;
-
-					sibling = rcu_dereference(
-						node->child[next_bit ^ 1]);
-					if (sibling) {
-						next = sibling;
-						while (next) {
-							if (!(next->flags &
-						      LPM_TREE_NODE_FLAG_IM))
-								goto found;
-							if (rcu_access_pointer(
-								next->child[0]))
-								next = rcu_dereference(
-									next->child[0]);
-							else if (rcu_access_pointer(
-								next->child[1]))
-								next = rcu_dereference(
-									next->child[1]);
-							else
-								next = NULL;
-						}
-					}
-
-					next_bit = extract_bit(k->data,
-								node->prefixlen);
-					node = rcu_dereference(
-						node->child[next_bit]);
-				}
-			}
-
-			if (next) {
-found:
-				nkey->prefixlen = next->prefixlen;
-				memcpy(nkey->data, next->data,
-				       trie->data_size);
-				return 0;
-			}
-
-			return -ENOENT;
-		}
-
-		if (matchlen < node->prefixlen)
+	/* Find the exact node while recording the path back to the root. */
+	for (node = search_root; node;) {
+		node_stack[++stack_ptr] = node;
+		matchlen = longest_prefix_match(trie, node, key);
+		if (node->prefixlen != matchlen ||
+		    node->prefixlen == key->prefixlen)
 			break;
 
-		{
-			unsigned int next_bit =
-				extract_bit(k->data, node->prefixlen);
-			node = rcu_dereference(node->child[next_bit]);
+		next_bit = extract_bit(key->data, node->prefixlen);
+		node = rcu_dereference(node->child[next_bit]);
+	}
+	if (!node || node->prefixlen != key->prefixlen ||
+	    node->prefixlen != matchlen ||
+	    (node->flags & LPM_TREE_NODE_FLAG_IM))
+		goto find_leftmost;
+
+	/* The exact node follows both of its subtrees in postorder. Walk up
+	 * until a right subtree or a non-intermediate parent comes next.
+	 */
+	node = node_stack[stack_ptr];
+	while (stack_ptr > 0) {
+		parent = node_stack[stack_ptr - 1];
+		if (rcu_dereference(parent->child[0]) == node) {
+			search_root = rcu_dereference(parent->child[1]);
+			if (search_root)
+				goto find_leftmost;
 		}
+		if (!(parent->flags & LPM_TREE_NODE_FLAG_IM)) {
+			next_node = parent;
+			goto do_copy;
+		}
+
+		node = parent;
+		stack_ptr--;
 	}
 
-	return -ENOENT;
+	err = -ENOENT;
+	goto free_stack;
+
+find_leftmost:
+	/* Find the first real node in postorder. Intermediate nodes always
+	 * have two children; real nodes may have either child or both.
+	 */
+	for (node = search_root; node;) {
+		if (node->flags & LPM_TREE_NODE_FLAG_IM) {
+			node = rcu_dereference(node->child[0]);
+		} else {
+			next_node = node;
+			node = rcu_dereference(node->child[0]);
+			if (!node)
+				node = rcu_dereference(next_node->child[1]);
+		}
+	}
+do_copy:
+	next_key->prefixlen = next_node->prefixlen;
+	memcpy(next_key->data, next_node->data, trie->data_size);
+free_stack:
+	kfree(node_stack);
+	return err;
 }
 
 const struct bpf_map_ops trie_map_ops = {
