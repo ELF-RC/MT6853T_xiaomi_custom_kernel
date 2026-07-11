@@ -2004,7 +2004,7 @@ void wakeup_kcompactd(pg_data_t *pgdat, int order, int classzone_idx)
 		pgdat->kcompactd_classzone_idx = classzone_idx;
 
 	/*
-	 * Pairs with implicit barrier in wait_event_freezable()
+	 * Pairs with implicit barrier in wait_event_freezable_timeout()
 	 * such that wakeups are not missed.
 	 */
 	if (!wq_has_sleeper(&pgdat->kcompactd_wait))
@@ -2068,8 +2068,9 @@ static int kcompactd(void *p)
 		if (sysctl_compaction_proactiveness > 0 &&
 		    !kcompactd_work_requested(pgdat)) {
 			/* Proactive: wake up periodically */
-			freezable_schedule_timeout(
-				sysctl_compaction_proactiveness);
+			wait_event_freezable_timeout(pgdat->kcompactd_wait,
+						     kcompactd_work_requested(pgdat),
+					 sysctl_compaction_proactiveness);
 
 			/* Check if proactive compaction is needed */
 			if (!kcompactd_work_requested(pgdat) &&
