@@ -1,5 +1,18 @@
 name: Build Kernel
+
 on:
+  push:
+    branches:
+      - main
+      - development
+      - KernelSU
+      - Resukisu
+  pull_request:
+    branches:
+      - main
+      - development
+      - KernelSU
+      - Resukisu
   workflow_dispatch:
     inputs:
         LOCALVERSIONNAME:
@@ -7,26 +20,36 @@ on:
             required: true
             default: ''
 
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Kernel (${{ matrix.branch }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      LOCALVERSION_NAME: ${{ github.event.inputs.LOCALVERSIONNAME || 'ci' }}
+      TOOLCHAIN_REV: 341870e52463c25315cf10037b1b0ff4fa0a3fec
+      ANYKERNEL_REV: 1c9a500dd4aa8081952523126e97eb155aed941b
     strategy:
       fail-fast: false
       matrix:
-        branch: [KernelSU, Resukisu, main, development]
+        branch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["KernelSU","Resukisu","main","development"]' || format('["{0}"]', github.event_name == 'pull_request' && 'pr' || github.ref_name)) }}
 
     steps:
 
-      - name: Set Beijing Timezone
-        uses: szenius/set-timezone@v1.2
-        with:
-          timezoneLinux: "Asia/Shanghai"
-
-      - name: Set SWAP To 5GiB
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 5
+      - name: Configure 5 GiB swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 5G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
       - name: Clean Useless Files
         run: |
@@ -36,18 +59,25 @@ jobs:
       - name: Initialize Compilation Environment
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential lld libssl-dev libelf-dev flex bison bc curl git zip llvm ccache -y
-          echo "BUILD_TIME=$(TZ=Asia/Shanghai date "+%Y%m%d%H%M")" >> $GITHUB_ENV
+          sudo apt-get install build-essential lld libssl-dev libelf-dev flex bison bc curl git zip llvm -y
 
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ matrix.branch }}
+          ref: ${{ matrix.branch == 'pr' && github.event.pull_request.head.sha || matrix.branch }}
           submodules: recursive
+
+      - name: Record source revision
+        id: revision
+        run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Get Toolchain
         run: |
-          git clone --depth=1 https://github.com/ELF-RC/android_kernel4x_tools.git tooltmp
+          git init tooltmp
+          git -C tooltmp remote add origin https://github.com/ELF-RC/android_kernel4x_tools.git
+          git -C tooltmp fetch --depth=1 origin "$TOOLCHAIN_REV"
+          git -C tooltmp checkout --detach FETCH_HEAD
+          test "$(git -C tooltmp rev-parse HEAD)" = "$TOOLCHAIN_REV"
 
       - name: Build Kernel
         run: |
@@ -62,7 +92,8 @@ jobs:
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
             READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
             HOSTCC=clang HOSTCXX=clang++ LLVM_IAS=1 \
-            KCFLAGS="--target=aarch64-linux-gnu -w" \
+            KCFLAGS="--target=aarch64-linux-gnu" \
+            LOCALVERSION="-${LOCALVERSION_NAME}" \
             cannon_defconfig
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
             CROSS_COMPILE=$CROSS_COMPILE \
@@ -70,22 +101,31 @@ jobs:
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
             READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
             HOSTCC=clang HOSTCXX=clang++ LLVM_IAS=1 \
-            KCFLAGS="--target=aarch64-linux-gnu -w"
+            KCFLAGS="--target=aarch64-linux-gnu" \
+            LOCALVERSION="-${LOCALVERSION_NAME}"
 
       - name: Pack Kernel with AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git -b master AK3
+          git init AK3
+          git -C AK3 remote add origin https://github.com/osm0sis/AnyKernel3.git
+          git -C AK3 fetch --depth=1 origin "$ANYKERNEL_REV"
+          git -C AK3 checkout --detach FETCH_HEAD
+          test "$(git -C AK3 rev-parse HEAD)" = "$ANYKERNEL_REV"
+          test -s out/arch/arm64/boot/Image.gz-dtb
           cp out/arch/arm64/boot/Image.gz-dtb AK3/
           cd AK3
           sed -i "s|kernel.string=.*|kernel.string=Xiaomi Custom Kernel (${{ matrix.branch }})|" anykernel.sh
           sed -i "s|device.name1=.*|device.name1=cannon|" anykernel.sh
           sed -i "s|device.name2=.*|device.name2=cannong|" anykernel.sh
-          sed -i "s|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1|" anykernel.sh
+          sed -i "s|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=0|" anykernel.sh
           sed -i "s|BLOCK=.*|BLOCK=auto;|" anykernel.sh
+          grep -q "^device.name1=cannon$" anykernel.sh
+          grep -q "^IS_SLOT_DEVICE=0$" anykernel.sh
+          grep -q "^BLOCK=auto;$" anykernel.sh
           rm -rf .git README.md LICENSE
 
       - name: Upload Kernel Package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: cannon_${{ matrix.branch }}_${{ github.event.inputs.LOCALVERSIONNAME }}_${{ github.actor }}
+          name: cannon_${{ matrix.branch }}_${{ steps.revision.outputs.sha }}_${{ env.LOCALVERSION_NAME }}_${{ github.actor }}
           path: AK3/
