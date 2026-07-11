@@ -177,9 +177,10 @@ static inline void zram_set_priority(struct zram *zram, u32 index, u32 prio)
 	 * Clear previous priority value first, in case if we recompress
 	 * further an already recompressed page
 	 */
-	zram->table[index].flags &= ~(ZRAM_COMP_PRIORITY_MASK <<
-				      ZRAM_COMP_PRIORITY_BIT1);
-	zram->table[index].flags |= (prio << ZRAM_COMP_PRIORITY_BIT1);
+	zram->table[index].flags &=
+		~((unsigned long)ZRAM_COMP_PRIORITY_MASK <<
+		  ZRAM_COMP_PRIORITY_BIT1);
+	zram->table[index].flags |= (unsigned long)prio << ZRAM_COMP_PRIORITY_BIT1;
 }
 
 static inline u32 zram_get_priority(struct zram *zram, u32 index)
@@ -1380,37 +1381,77 @@ static DEVICE_ATTR_RO(bd_stat);
 #endif
 static DEVICE_ATTR_RO(debug_stat);
 
-static void zram_meta_free(struct zram *zram, u64 disksize)
+struct zram_meta {
+	struct zram_table_entry *table;
+	struct zs_pool *mem_pool;
+	u64 disksize;
+};
+
+static void zram_meta_free(struct zram_meta *meta)
 {
-	size_t num_pages = disksize >> PAGE_SHIFT;
+	size_t num_pages = meta->disksize >> PAGE_SHIFT;
 	size_t index;
 
-	/* Free all pages that are still in this zram device */
-	for (index = 0; index < num_pages; index++)
-		zram_free_page(zram, index);
+	/*
+	 * Detached metadata has no users. Free only zsmalloc-backed entries;
+	 * SAME entries own no allocation and WB entries belong to the backing
+	 * device, whose bitmap is released by reset_bdev().
+	 */
+	for (index = 0; meta->table && meta->mem_pool &&
+	     index < num_pages; index++) {
+		struct zram_table_entry *entry = &meta->table[index];
+		unsigned long flags = entry->flags;
 
-	zs_destroy_pool(zram->mem_pool);
-	vfree(zram->table);
+		if (flags & (BIT(ZRAM_WB) | BIT(ZRAM_SAME)))
+			continue;
+		if (entry->handle)
+			zs_free(meta->mem_pool, entry->handle);
+	}
+
+	if (meta->mem_pool)
+		zs_destroy_pool(meta->mem_pool);
+	vfree(meta->table);
+	memset(meta, 0, sizeof(*meta));
 }
 
-static bool zram_meta_alloc(struct zram *zram, u64 disksize)
+static bool zram_meta_alloc(struct zram *zram, struct zram_meta *meta,
+			    u64 disksize)
 {
-	size_t num_pages;
+	size_t num_pages = disksize >> PAGE_SHIFT;
 
-	num_pages = disksize >> PAGE_SHIFT;
-	zram->table = vzalloc(num_pages * sizeof(*zram->table));
-	if (!zram->table)
+	meta->table = vzalloc(num_pages * sizeof(*meta->table));
+	if (!meta->table)
 		return false;
 
-	zram->mem_pool = zs_create_pool(zram->disk->disk_name);
-	if (!zram->mem_pool) {
-		vfree(zram->table);
+	meta->mem_pool = zs_create_pool(zram->disk->disk_name);
+	if (!meta->mem_pool) {
+		vfree(meta->table);
+		meta->table = NULL;
 		return false;
 	}
 
 	if (!huge_class_size)
-		huge_class_size = zs_huge_class_size(zram->mem_pool);
+		huge_class_size = zs_huge_class_size(meta->mem_pool);
 	return true;
+}
+
+static void zram_meta_attach(struct zram *zram, struct zram_meta *meta)
+{
+	zram->table = meta->table;
+	zram->mem_pool = meta->mem_pool;
+	meta->table = NULL;
+	meta->mem_pool = NULL;
+}
+
+static void zram_meta_detach(struct zram *zram, struct zram_meta *meta)
+{
+	meta->table = zram->table;
+	meta->mem_pool = zram->mem_pool;
+	meta->disksize = zram->disksize;
+
+	zram->table = NULL;
+	zram->mem_pool = NULL;
+	zram->disksize = 0;
 }
 
 /*
@@ -1835,6 +1876,18 @@ static int zram_recompress(struct zram *zram, u32 index, struct page *page,
 			return ret;
 		}
 
+		/*
+		 * zcomp's output buffer is 2 * PAGE_SIZE, but zs_malloc() accepts
+		 * at most PAGE_SIZE. zs_lookup_class_index() returns its sentinel
+		 * class 0 for a larger object, which would otherwise look like an
+		 * improvement and lead us into a guaranteed allocation failure.
+		 */
+		if (comp_len_new > PAGE_SIZE) {
+			class_index_new = class_index_old;
+			zcomp_stream_put(zram->comps[prio]);
+			continue;
+		}
+
 		class_index_new = zs_lookup_class_index(zram->mem_pool,
 							comp_len_new);
 
@@ -2240,30 +2293,33 @@ out:
 }
 
 #ifdef CONFIG_ZRAM_MULTI_COMP
-static void zram_destroy_comps(struct zram *zram)
+static void zram_destroy_comps(struct zcomp *comps[ZRAM_MAX_COMPS])
 {
 	u32 prio;
 
 	for (prio = 0; prio < ZRAM_MAX_COMPS; prio++) {
-		struct zcomp *comp = zram->comps[prio];
-
-		zram->comps[prio] = NULL;
-		if (!comp)
-			continue;
-		zcomp_destroy(comp);
-		zram->num_active_comps--;
+		if (comps[prio])
+			zcomp_destroy(comps[prio]);
 	}
+}
+
+static void zram_detach_comps(struct zram *zram,
+			      struct zcomp *comps[ZRAM_MAX_COMPS])
+{
+	memcpy(comps, zram->comps, sizeof(zram->comps));
+	memset(zram->comps, 0, sizeof(zram->comps));
+	zram->num_active_comps = 0;
 }
 #endif
 
 static void zram_reset_device(struct zram *zram)
 {
+	struct zram_meta meta = { };
 #ifdef CONFIG_ZRAM_MULTI_COMP
-	struct zcomp *comp_table[ZRAM_MAX_COMPS];
-	char *alg_table[ZRAM_MAX_COMPS];
-	u32 prio;
+	struct zcomp *comps[ZRAM_MAX_COMPS] = { };
+#else
+	struct zcomp *comp;
 #endif
-	u64 disksize;
 
 	down_write(&zram->init_lock);
 
@@ -2274,43 +2330,50 @@ static void zram_reset_device(struct zram *zram)
 		return;
 	}
 
+	/*
+	 * Publish the uninitialized state and detach every object which may be
+	 * replaced by a concurrent disksize_store() before dropping init_lock.
+	 */
+	zram_meta_detach(zram, &meta);
 #ifdef CONFIG_ZRAM_MULTI_COMP
-	for (prio = 0; prio < ZRAM_MAX_COMPS; prio++) {
-		comp_table[prio] = zram->comps[prio];
-		alg_table[prio] = zram->comp_algs[prio];
-	}
-#endif
-	disksize = zram->disksize;
-	zram->disksize = 0;
-
-	set_capacity(zram->disk, 0);
-
-	up_write(&zram->init_lock);
-	/* I/O operation under all of CPU are done so let's free */
-	zram_meta_free(zram, disksize);
-	memset(&zram->stats, 0, sizeof(zram->stats));
-
-#ifdef CONFIG_ZRAM_MULTI_COMP
-	zram_destroy_comps(zram);
-	/* Restore default compressor */
+	zram_detach_comps(zram, comps);
 	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 #else
-	{
-		struct zcomp *comp = zram->comp;
-		zram->comp = NULL;
-		zcomp_destroy(comp);
-	}
-	strlcpy(zram->compressor, default_compressor, sizeof(zram->compressor));
+	comp = zram->comp;
+	zram->comp = NULL;
+	strscpy(zram->compressor, default_compressor,
+		sizeof(zram->compressor));
 #endif
+
+	set_capacity(zram->disk, 0);
+	memset(&zram->stats, 0, sizeof(zram->stats));
 	reset_bdev(zram);
+
+	up_write(&zram->init_lock);
+
+	/* No shared pointer refers to these objects after the detach above. */
+#ifdef CONFIG_ZRAM_MULTI_COMP
+	zram_destroy_comps(comps);
+#else
+	if (comp)
+		zcomp_destroy(comp);
+#endif
+	zram_meta_free(&meta);
 }
 
 static ssize_t disksize_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
+	struct zram_meta meta = { };
 	u64 disksize;
 	struct zram *zram = dev_to_zram(dev);
 	int err;
+#ifdef CONFIG_ZRAM_MULTI_COMP
+	struct zcomp *comps[ZRAM_MAX_COMPS] = { };
+	u32 num_active_comps = 0;
+#else
+	struct zcomp *comp = NULL;
+#endif
 
 	disksize = memparse(buf, NULL);
 	if (!disksize)
@@ -2324,9 +2387,9 @@ static ssize_t disksize_store(struct device *dev,
 	}
 
 	disksize = PAGE_ALIGN(disksize);
-	if (!zram_meta_alloc(zram, disksize)) {
+	if (!zram_meta_alloc(zram, &meta, disksize)) {
 		err = -ENOMEM;
-		goto out_unlock;
+		goto out_free;
 	}
 
 #ifdef CONFIG_ZRAM_MULTI_COMP
@@ -2344,24 +2407,34 @@ static ssize_t disksize_store(struct device *dev,
 				pr_err("Cannot initialise %s compressing backend\n",
 				       zram->comp_algs[prio]);
 				err = PTR_ERR(comp);
-				goto out_free_comps;
+				goto out_free;
 			}
 
-			zram->comps[prio] = comp;
-			zram->num_active_comps++;
+			comps[prio] = comp;
+			num_active_comps++;
 		}
 	}
 #else
-	{
-		struct zcomp *comp = zcomp_create(zram->compressor);
-		if (IS_ERR(comp)) {
-			pr_err("Cannot initialise %s compressing backend\n",
-					zram->compressor);
-			err = PTR_ERR(comp);
-			goto out_free_meta;
-		}
-		zram->comp = comp;
+	comp = zcomp_create(zram->compressor);
+	if (IS_ERR(comp)) {
+		pr_err("Cannot initialise %s compressing backend\n",
+		       zram->compressor);
+		err = PTR_ERR(comp);
+		comp = NULL;
+		goto out_free;
 	}
+#endif
+
+	/*
+	 * Nothing is visible to I/O until every allocation has succeeded.
+	 * Publish one complete metadata/compressor set while holding init_lock.
+	 */
+	zram_meta_attach(zram, &meta);
+#ifdef CONFIG_ZRAM_MULTI_COMP
+	memcpy(zram->comps, comps, sizeof(zram->comps));
+	zram->num_active_comps = num_active_comps;
+#else
+	zram->comp = comp;
 #endif
 	barrier();
 	zram->disksize = disksize;
@@ -2372,14 +2445,14 @@ static ssize_t disksize_store(struct device *dev,
 
 	return len;
 
+out_free:
 #ifdef CONFIG_ZRAM_MULTI_COMP
-out_free_comps:
-	zram_destroy_comps(zram);
-	zram_meta_free(zram, disksize);
+	zram_destroy_comps(comps);
 #else
-out_free_meta:
-	zram_meta_free(zram, disksize);
+	if (comp)
+		zcomp_destroy(comp);
 #endif
+	zram_meta_free(&meta);
 out_unlock:
 	up_write(&zram->init_lock);
 	return err;

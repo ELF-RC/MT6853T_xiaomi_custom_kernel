@@ -17,84 +17,65 @@
 #define ZSTD_DEF_LEVEL	3
 
 struct zstd_ctx {
+	void *cwksp;
+	void *dwksp;
 	zstd_cctx *cctx;
 	zstd_dctx *dctx;
+	zstd_parameters params;
 };
 
 static int zstd_comp_init(struct zstd_ctx *ctx)
 {
-	zstd_parameters params = zstd_get_params(ZSTD_DEF_LEVEL, 0);
+	size_t wksp_size;
 
-	/*
-	 * Create a dynamic compression context. ZSTD_createCCtx() uses
-	 * kvmalloc(GFP_KERNEL) internally, which is safe during init
-	 * (process context).
-	 *
-	 * ZSTD_initStaticCCtx() (the alternative) embeds the CCtx into a
-	 * pre-allocated vmalloc buffer and relies on the cwksp allocator
-	 * to carve out space for all internal structures. When
-	 * ZSTD_resetCCtx_internal() writes to the CCtx fields (e.g.
-	 * isFirstBlock) it may hit a page mapped read-only due to the
-	 * interaction between cwksp alignment and the vmalloc PMD block
-	 * permissions. This causes a "write to read-only memory" panic
-	 * on arm64 with certain vmalloc layouts.
-	 *
-	 * Using ZSTD_createCCtx() keeps the CCtx in its own writable
-	 * allocation, avoiding the problem entirely.
-	 */
-	ctx->cctx = ZSTD_createCCtx();
-	if (!ctx->cctx)
+	ctx->params = zstd_get_params(ZSTD_DEF_LEVEL, 0);
+	wksp_size = zstd_cctx_workspace_bound(&ctx->params.cParams);
+	ctx->cwksp = kvmalloc(wksp_size, GFP_KERNEL);
+	if (!ctx->cwksp)
 		return -ENOMEM;
 
 	/*
-	 * Pre-allocate the internal workspace by setting the compression
-	 * level. This ensures ZSTD_compressCCtx() won't try to allocate
-	 * memory during compression (zram disables preemption).
+	 * The context uses only this caller-owned workspace. In particular,
+	 * zram may invoke us with preemption disabled, so the compression path
+	 * must never fall back to ZSTD's GFP_KERNEL allocator.
 	 */
-	if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx->cctx,
-			ZSTD_c_compressionLevel, ZSTD_DEF_LEVEL))) {
-		ZSTD_freeCCtx(ctx->cctx);
-		ctx->cctx = NULL;
+	ctx->cctx = zstd_init_cctx(ctx->cwksp, wksp_size);
+	if (!ctx->cctx) {
+		kvfree(ctx->cwksp);
+		ctx->cwksp = NULL;
 		return -EINVAL;
 	}
-
-	/*
-	 * Also set windowLog to ensure the workspace is sized for the
-	 * actual parameters we'll use (compressionLevel alone might pick
-	 * different internal parameters based on source size).
-	 */
-	if (ZSTD_isError(ZSTD_CCtx_setParameter(ctx->cctx,
-			ZSTD_c_windowLog, params.cParams.windowLog))) {
-		ZSTD_freeCCtx(ctx->cctx);
-		ctx->cctx = NULL;
-		return -EINVAL;
-	}
-
 	return 0;
 }
 
 static int zstd_decomp_init(struct zstd_ctx *ctx)
 {
-	/*
-	 * ZSTD_DCtx has workspace arrays embedded in the struct,
-	 * so no lazy allocation happens during decompression.
-	 * ZSTD_createDCtx() is safe for atomic context.
-	 */
-	ctx->dctx = ZSTD_createDCtx();
-	if (!ctx->dctx)
+	size_t wksp_size = zstd_dctx_workspace_bound();
+
+	ctx->dwksp = kvmalloc(wksp_size, GFP_KERNEL);
+	if (!ctx->dwksp)
 		return -ENOMEM;
+
+	ctx->dctx = zstd_init_dctx(ctx->dwksp, wksp_size);
+	if (!ctx->dctx) {
+		kvfree(ctx->dwksp);
+		ctx->dwksp = NULL;
+		return -EINVAL;
+	}
 	return 0;
 }
 
 static void zstd_comp_exit(struct zstd_ctx *ctx)
 {
-	ZSTD_freeCCtx(ctx->cctx);
+	kvfree(ctx->cwksp);
+	ctx->cwksp = NULL;
 	ctx->cctx = NULL;
 }
 
 static void zstd_decomp_exit(struct zstd_ctx *ctx)
 {
-	ZSTD_freeDCtx(ctx->dctx);
+	kvfree(ctx->dwksp);
+	ctx->dwksp = NULL;
 	ctx->dctx = NULL;
 }
 
@@ -155,8 +136,8 @@ static int __zstd_compress(const u8 *src, unsigned int slen,
 	struct zstd_ctx *zctx = ctx;
 	size_t out_len;
 
-	out_len = ZSTD_compressCCtx(zctx->cctx, dst, *dlen, src, slen,
-				    ZSTD_DEF_LEVEL);
+	out_len = zstd_compress_cctx(zctx->cctx, dst, *dlen, src, slen,
+				     &zctx->params);
 	if (zstd_is_error(out_len))
 		return -EINVAL;
 	*dlen = out_len;
@@ -169,11 +150,7 @@ static int __zstd_decompress(const u8 *src, unsigned int slen,
 	struct zstd_ctx *zctx = ctx;
 	size_t out_len;
 
-	/*
-	 * ZSTD_decompressDCtx() internally calls ZSTD_decompress_usingDict()
-	 * which resets the session, so no explicit reset is needed here.
-	 */
-	out_len = ZSTD_decompressDCtx(zctx->dctx, dst, *dlen, src, slen);
+	out_len = zstd_decompress_dctx(zctx->dctx, dst, *dlen, src, slen);
 	if (zstd_is_error(out_len))
 		return -EINVAL;
 	*dlen = out_len;
