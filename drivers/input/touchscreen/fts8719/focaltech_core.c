@@ -1376,10 +1376,14 @@ static int fts_parse_dt(struct device *dev, struct fts_ts_platform_data *pdata)
 	ret = of_property_read_u32(np, "spi-max-frequency", &temp_val);
 	if (ret < 0) {
 		FTS_ERROR("Unable to get spi-max-frequency, please check dts");
-		pdata->spi_max_freq = FTS_DEFAULT_SPI_FREQ;
-	} else {
-		pdata->spi_max_freq = temp_val;
+		temp_val = FTS_DEFAULT_SPI_FREQ;
 	}
+	if (temp_val > FTS_SPI_CLK_MAX) {
+		FTS_ERROR("spi-max-frequency %u exceeds controller limit %u, clamping",
+			  temp_val, FTS_SPI_CLK_MAX);
+		temp_val = FTS_SPI_CLK_MAX;
+	}
+	pdata->spi_max_freq = temp_val;
 
 	FTS_INFO("max touch number:%d, irq gpio:%d, reset gpio:%d, spi freq: %d",
 			pdata->max_touch_number, pdata->irq_gpio, pdata->reset_gpio, pdata->spi_max_freq);

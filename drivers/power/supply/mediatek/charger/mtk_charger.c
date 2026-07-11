@@ -1804,12 +1804,10 @@ static bool mtk_is_charger_on(struct charger_manager *info)
 		}
 		if (info->chr_type != CHARGER_UNKNOWN) {
 			mtk_charger_plug_out(info);
-			info->cable_out_cnt++;
 			mutex_lock(&info->cable_out_lock);
-			if (info->cable_out_cnt > 3) {
+			info->cable_out_cnt++;
+			if (info->cable_out_cnt > 3)
 				info->cable_out_cnt = 0;
-				mutex_unlock(&info->cable_out_lock);
-			}
 			mutex_unlock(&info->cable_out_lock);
 		}
 	} else {

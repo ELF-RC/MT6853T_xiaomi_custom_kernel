@@ -43,7 +43,7 @@ static struct device_attribute power_supply_attrs[];
 static const char * const power_supply_type_text[] = {
 	"Unknown", "Battery", "UPS", "Mains", "USB",
 	"USB_DCP", "USB_CDP", "USB_ACA", "Wireless", "USB_C",
-	"USB_PD", "USB_PD_DRP", "BrickID", "Batt_Verity",
+	"USB_PD", "USB_PD_DRP", "BrickID", "BMS", "Batt_Verity",
 };
 
 static const char * const power_supply_status_text[] = {
