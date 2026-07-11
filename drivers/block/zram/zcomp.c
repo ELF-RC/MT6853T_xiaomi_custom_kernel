@@ -212,6 +212,7 @@ void zcomp_destroy(struct zcomp *comp)
 {
 	cpuhp_state_remove_instance(CPUHP_ZCOMP_PREPARE, &comp->node);
 	free_percpu(comp->stream);
+	kfree(comp->name);
 	kfree(comp);
 }
 
@@ -235,9 +236,15 @@ struct zcomp *zcomp_create(const char *compress)
 	if (!comp)
 		return ERR_PTR(-ENOMEM);
 
-	comp->name = compress;
+	comp->name = kstrdup(compress, GFP_KERNEL);
+	if (!comp->name) {
+		kfree(comp);
+		return ERR_PTR(-ENOMEM);
+	}
+
 	error = zcomp_init(comp);
 	if (error) {
+		kfree(comp->name);
 		kfree(comp);
 		return ERR_PTR(error);
 	}
