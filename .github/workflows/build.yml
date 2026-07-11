@@ -31,13 +31,14 @@ jobs:
   build:
     name: Build Kernel (${{ matrix.branch }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     env:
       LOCALVERSION_NAME: ${{ github.event.inputs.LOCALVERSIONNAME || 'ci' }}
       TOOLCHAIN_REV: 341870e52463c25315cf10037b1b0ff4fa0a3fec
       ANYKERNEL_REV: 1c9a500dd4aa8081952523126e97eb155aed941b
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         branch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["KernelSU","Resukisu","main","development"]' || format('["{0}"]', github.event_name == 'pull_request' && 'pr' || github.ref_name)) }}
 
@@ -50,16 +51,13 @@ jobs:
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-
-      - name: Clean Useless Files
-        run: |
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          free -h
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Initialize Compilation Environment
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential lld libssl-dev libelf-dev flex bison bc curl git zip llvm -y
+          sudo apt-get install build-essential lld libssl-dev libelf-dev flex bison bc curl git time zip llvm -y
 
       - name: Checkout Repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -79,30 +77,54 @@ jobs:
           git -C tooltmp checkout --detach FETCH_HEAD
           test "$(git -C tooltmp rev-parse HEAD)" = "$TOOLCHAIN_REV"
 
-      - name: Build Kernel
+      - name: Prepare build variables
         run: |
-          export KBUILD_BUILD_HOST=Github-Action
-          export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
-          export PATH="$GITHUB_WORKSPACE/tooltmp/clang/host/linux-x86/clang-r428724/bin:$PATH"
-          export CROSS_COMPILE=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi/bin/arm-linux-gnueabi-
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+          echo "$GITHUB_WORKSPACE/tooltmp/clang/host/linux-x86/clang-r428724/bin" >> "$GITHUB_PATH"
+          echo "CROSS_COMPILE=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/tooltmp/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi/bin/arm-linux-gnueabi-" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_HOST=Github-Action" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_USER=${GITHUB_ACTOR,,}" >> "$GITHUB_ENV"
+          jobs="$(nproc)"
+          echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
+          echo "::notice::Using $jobs CPUs for the kernel build"
+
+      - name: Configure Kernel
+        run: |
+          make -j"$BUILD_JOBS" O=out ARCH=arm64 CC=clang \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
             READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
             HOSTCC=clang HOSTCXX=clang++ LLVM_IAS=1 \
             KCFLAGS="--target=aarch64-linux-gnu" \
             LOCALVERSION="-${LOCALVERSION_NAME}" \
             cannon_defconfig
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+
+      - name: Build Kernel Image
+        run: |
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+          timeout --foreground --signal=TERM --kill-after=2m 35m \
+            nice -n 5 /usr/bin/time -v \
+            make -j"$BUILD_JOBS" O=out ARCH=arm64 CC=clang \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
             READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
             HOSTCC=clang HOSTCXX=clang++ LLVM_IAS=1 \
             KCFLAGS="--target=aarch64-linux-gnu" \
-            LOCALVERSION="-${LOCALVERSION_NAME}"
+            LOCALVERSION="-${LOCALVERSION_NAME}" \
+            Image.gz-dtb
+          echo "::notice::Kernel make exited successfully"
+
+      - name: Verify Kernel Image
+        run: |
+          image=out/arch/arm64/boot/Image.gz-dtb
+          test -s "$image"
+          ls -lh "$image"
+          sha256sum "$image"
+          free -h
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Pack Kernel with AnyKernel3
         run: |
@@ -129,3 +151,6 @@ jobs:
         with:
           name: cannon_${{ matrix.branch }}_${{ steps.revision.outputs.sha }}_${{ env.LOCALVERSION_NAME }}_${{ github.actor }}
           path: AK3/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
