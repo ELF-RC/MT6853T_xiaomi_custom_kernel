@@ -714,24 +714,30 @@ static void usbpd_sha256_bitswap32(unsigned int *array, int len)
 		array[i] = BSWAP_32(array[i]);
 }
 
-void charToint(char *str, int input_len, unsigned int *out, unsigned int *outlen)
+static int chars_to_u32(const u8 *data, size_t data_len, u32 *out,
+			size_t out_size, unsigned int *outlen)
 {
-	int i;
+	size_t words, i, j;
 
-	if (outlen != NULL)
-		*outlen = 0;
-	for (i = 0; i < (input_len / 4 + 1); i++) {
-		out[i] = ((str[i*4 + 3] * 0x1000000) |
-				(str[i*4 + 2] * 0x10000) |
-				(str[i*4 + 1] * 0x100) |
-				str[i*4]);
-		*outlen = *outlen + 1;
+	if (!out || !outlen || (data_len && !data))
+		return -EINVAL;
+
+	words = DIV_ROUND_UP(data_len, sizeof(*out));
+	if (words > out_size)
+		return -E2BIG;
+
+	memset(out, 0, out_size * sizeof(*out));
+	for (i = 0; i < words; i++) {
+		u32 value = 0;
+
+		for (j = 0; j < sizeof(*out) &&
+		     i * sizeof(*out) + j < data_len; j++)
+			value |= (u32)data[i * sizeof(*out) + j] << (j * 8);
+		out[i] = value;
 	}
 
-	pr_info("%s: outlen = %d\n", __func__, *outlen);
-	for (i = 0; i < *outlen; i++)
-		pr_info("%s: out[%d] = %08x\n", __func__, i, out[i]);
-	pr_info("%s: char to int done.\n", __func__);
+	*outlen = words;
+	return 0;
 }
 
 static int tcp_dpm_event_cb_uvdm(struct tcpc_device *tcpc, int ret,
@@ -758,45 +764,32 @@ static int pd_request_vdm_cmd(struct adapter_device *dev,
 {
 	u32 vdm_hdr = 0;
 	int rc = 0;
-	struct tcp_dpm_custom_vdm_data *vdm_data;
+	struct tcp_dpm_custom_vdm_data vdm_data = { 0 };
 	struct mtk_pd_adapter_info *info;
-	unsigned int *int_data;
+	u32 int_data[USBPD_UVDM_SS_LEN] = { 0 };
 	unsigned int outlen;
-	// test
 	int i;
-	// test
-
-	if (in_interrupt()) {
-		int_data = kmalloc(40, GFP_ATOMIC);
-		vdm_data = kmalloc(sizeof(*vdm_data), GFP_ATOMIC);
-		pr_info("%s: kmalloc atomic ok.\n", __func__);
-	} else {
-		int_data = kmalloc(40, GFP_KERNEL);
-		vdm_data = kmalloc(sizeof(*vdm_data), GFP_KERNEL);
-		pr_info("%s: kmalloc kernel ok.\n", __func__);
-	}
-	memset(int_data, 0, 40);
-
-	charToint(data, data_len, int_data, &outlen);
 
 	info = (struct mtk_pd_adapter_info *)adapter_dev_get_drvdata(dev);
 	if (info == NULL || info->tcpc == NULL)
-		return MTK_ADAPTER_ERROR;
+		return -ENODEV;
+
+	rc = chars_to_u32(data, data_len, int_data, ARRAY_SIZE(int_data),
+			  &outlen);
+	if (rc)
+		return rc;
 
 	vdm_hdr = VDM_HDR(info->adapter_dev->adapter_svid, USBPD_VDM_REQUEST, cmd);
-	vdm_data->wait_resp = true;
-	vdm_data->vdos[0] = vdm_hdr;
+	vdm_data.wait_resp = true;
+	vdm_data.vdos[0] = vdm_hdr;
 
 	switch (cmd) {
 	case USBPD_UVDM_CHARGER_VERSION:
 	case USBPD_UVDM_CHARGER_TEMP:
 	case USBPD_UVDM_CHARGER_VOLTAGE:
-		vdm_data->cnt = 1;
-		rc = tcpm_dpm_send_custom_vdm(info->tcpc, vdm_data, &cb_data);//&tcp_dpm_evt_cb_null
-		if (rc < 0) {
-			chr_err("failed to send %d\n", cmd);
-			return rc;
-		}
+		vdm_data.cnt = 1;
+		rc = tcpm_dpm_send_custom_vdm(info->tcpc, &vdm_data,
+					      &cb_data);
 		break;
 	case USBPD_UVDM_VERIFIED:
 	case USBPD_UVDM_REMOVE_COMPENSATION:
@@ -804,41 +797,36 @@ static int pd_request_vdm_cmd(struct adapter_device *dev,
 			if (cmd == USBPD_UVDM_REMOVE_COMPENSATION)
 				break;
 		}
+		if (outlen < USBPD_UVDM_VERIFIED_LEN)
+			return -EINVAL;
 
-		vdm_data->cnt = 1 + USBPD_UVDM_VERIFIED_LEN;
-
+		vdm_data.cnt = 1 + USBPD_UVDM_VERIFIED_LEN;
 		for (i = 0; i < USBPD_UVDM_VERIFIED_LEN; i++)
-			vdm_data->vdos[i + 1] = int_data[i];
-		pr_info("verify-0: %08x\n", vdm_data->vdos[1]);
-
-		rc = tcpm_dpm_send_custom_vdm(info->tcpc, vdm_data, &cb_data);//&tcp_dpm_evt_cb_null
-		if (rc < 0) {
-			chr_err("failed to send %d\n", cmd);
-			return rc;
-		}
+			vdm_data.vdos[i + 1] = int_data[i];
+		rc = tcpm_dpm_send_custom_vdm(info->tcpc, &vdm_data,
+					      &cb_data);
 		break;
 	case USBPD_UVDM_SESSION_SEED:
 	case USBPD_UVDM_AUTHENTICATION:
 	case USBPD_UVDM_REVERSE_AUTHEN:
+		if (outlen < USBPD_UVDM_SS_LEN)
+			return -EINVAL;
+
 		usbpd_sha256_bitswap32(int_data, USBPD_UVDM_SS_LEN);
-		vdm_data->cnt = 1 + USBPD_UVDM_SS_LEN;
+		vdm_data.cnt = 1 + USBPD_UVDM_SS_LEN;
 		for (i = 0; i < USBPD_UVDM_SS_LEN; i++)
-			vdm_data->vdos[i + 1] = int_data[i];
-
-		for (i = 0; i < USBPD_UVDM_SS_LEN; i++)
-			pr_info("%08x\n", vdm_data->vdos[i+1]);
-
-		rc = tcpm_dpm_send_custom_vdm(info->tcpc, vdm_data, &cb_data);//&tcp_dpm_evt_cb_null
-		if (rc < 0) {
-			chr_err("failed to send %d\n", cmd);
-			return rc;
-		}
+			vdm_data.vdos[i + 1] = int_data[i];
+		rc = tcpm_dpm_send_custom_vdm(info->tcpc, &vdm_data,
+					      &cb_data);
 		break;
 	default:
 		chr_err("cmd:%d is not support\n", cmd);
+		rc = -EOPNOTSUPP;
 		break;
 	}
-	kfree(int_data);
+
+	if (rc < 0)
+		chr_err("failed to send %d: %d\n", cmd, rc);
 	return rc;
 }
 

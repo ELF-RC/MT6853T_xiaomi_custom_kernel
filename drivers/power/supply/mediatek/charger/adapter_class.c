@@ -456,62 +456,70 @@ static ssize_t adapter_svid_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(adapter_svid);
 
-static int StringToHex(char *str, unsigned char *out, unsigned int *outlen)
+/* Largest UVDM payload currently consumed by pd_request_vdm_cmd(). */
+#define VDM_DATA_MAX	(USBPD_UVDM_SS_LEN * sizeof(u32))
+
+static int string_to_hex(const char *str, size_t len, u8 *out,
+			 size_t out_size, unsigned int *outlen)
 {
-	char *p = str;
-	char high = 0, low = 0;
-	int tmplen = strlen(p), cnt = 0;
-	tmplen = strlen(p);
-	while (cnt < (tmplen / 2)) {
-		high = ((*p > '9') && ((*p <= 'F') || (*p <= 'f'))) ? *p - 48 - 7 : *p - 48;
-		low = (*(++p) > '9' && ((*p <= 'F') || (*p <= 'f'))) ? *(p) - 48 - 7 : *(p) - 48;
-		out[cnt] = ((high & 0x0f) << 4 | (low & 0x0f));
-		p++;
-		cnt++;
+	size_t i;
+	int high, low;
+
+	if (!out || !outlen || (len & 1) || len / 2 > out_size)
+		return -EINVAL;
+
+	for (i = 0; i < len / 2; i++) {
+		high = hex_to_bin(str[i * 2]);
+		low = hex_to_bin(str[i * 2 + 1]);
+		if (high < 0 || low < 0)
+			return -EINVAL;
+		out[i] = (high << 4) | low;
 	}
-	if (tmplen % 2 != 0)
-		out[cnt] = ((*p > '9') && ((*p <= 'F') || (*p <= 'f'))) ? *p - 48 - 7 : *p - 48;
 
-	if (outlen != NULL)
-		*outlen = tmplen / 2 + tmplen % 2;
-
-	return tmplen / 2 + tmplen % 2;
+	*outlen = len / 2;
+	return 0;
 }
 
 static ssize_t request_vdm_cmd_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct adapter_device *adapter_dev = to_adapter_device(dev);
-	int cmd, ret;
-	unsigned char buffer[64];
-	unsigned char *data;
+	const char *comma, *payload;
+	char command[16];
+	u8 data[VDM_DATA_MAX] = { 0 };
+	size_t command_len, payload_len;
 	unsigned int count;
-	int i;
+	int cmd, ret;
 
-	if (in_interrupt()) {
-		data = kmalloc(40, GFP_ATOMIC);
-		pr_info("%s: kmalloc atomic ok.\n", __func__);
-	} else {
-		data = kmalloc(40, GFP_KERNEL);
-		pr_info("%s: kmalloc kernel ok.\n", __func__);
+	comma = memchr(buf, ',', size);
+	if (!comma || comma == buf)
+		return -EINVAL;
+
+	command_len = comma - buf;
+	if (command_len >= sizeof(command))
+		return -EINVAL;
+	memcpy(command, buf, command_len);
+	command[command_len] = '\0';
+	ret = kstrtoint(command, 0, &cmd);
+	if (ret)
+		return ret;
+
+	payload = comma + 1;
+	payload_len = size - (payload - buf);
+	while (payload_len && isspace((unsigned char)*payload)) {
+		payload++;
+		payload_len--;
 	}
-	memset(data, 0, 40);
+	while (payload_len && isspace((unsigned char)payload[payload_len - 1]))
+		payload_len--;
 
-	ret = sscanf(buf, "%d,%s\n", &cmd, buffer);
-	pr_info("%s:cmd:%d, buffer:%s\n", __func__, cmd, buffer);
+	ret = string_to_hex(payload, payload_len, data, sizeof(data), &count);
+	if (ret)
+		return ret;
 
-	StringToHex(buffer, data, &count);
-	pr_info("%s:count = %d\n", __func__, count);
-
-	for (i = 0; i < count; i++)
-		pr_info("%02x", data[i]);
-
-	if (adapter_dev != NULL && adapter_dev->ops != NULL &&
-	    adapter_dev->ops->request_vdm_cmd) {
-		adapter_dev->ops->request_vdm_cmd(adapter_dev,
-							cmd, data, count);
-	}
-	kfree(data);
+	ret = adapter_dev_request_vdm_cmd(adapter_dev, cmd, data, count);
+	if (ret < 0)
+		return ret;
 
 	return size;
 }
