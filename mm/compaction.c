@@ -1841,11 +1841,14 @@ int sysctl_compact_memory;
 
 /*
  * Controls proactive compaction in kcompactd.
- * Value 0-100: interval in jiffies between proactive checks.
- * 0 = disabled, 1 = aggressive, 100 = very conservative.
- * Default 10 (100ms at HZ=100).
+ *
+ * 0 = disabled (default).
+ * 1..100 = aggressiveness score (higher = check more often).
+ * Sleep between checks is (101 - value) * 10 ms, so:
+ *   100 ≈ 10ms (aggressive), 1 ≈ 1s (conservative).
+ * This matches the 0-100 sysctl range; do not treat the value as raw jiffies.
  */
-int sysctl_compaction_proactiveness __read_mostly = 10;
+int sysctl_compaction_proactiveness __read_mostly = 0;
 
 /*
  * This is the entry point for compacting all nodes via
@@ -2067,10 +2070,21 @@ static int kcompactd(void *p)
 
 		if (sysctl_compaction_proactiveness > 0 &&
 		    !kcompactd_work_requested(pgdat)) {
+			unsigned long timeout;
+
+			/*
+			 * Convert 1..100 aggressiveness into a sleep interval.
+			 * Higher proactiveness => shorter timeout.
+			 */
+			timeout = msecs_to_jiffies(
+				(101 - sysctl_compaction_proactiveness) * 10);
+			if (!timeout)
+				timeout = 1;
+
 			/* Proactive: wake up periodically */
 			wait_event_freezable_timeout(pgdat->kcompactd_wait,
 						     kcompactd_work_requested(pgdat),
-					 sysctl_compaction_proactiveness);
+						     timeout);
 
 			/* Check if proactive compaction is needed */
 			if (!kcompactd_work_requested(pgdat) &&

@@ -10,7 +10,8 @@
 #include <net/inetpeer.h>
 #include <net/tcp.h>
 
-int sysctl_tcp_fastopen __read_mostly = TFO_CLIENT_ENABLE | TFO_SERVER_ENABLE;
+/* Client-only by default on mobile; server TFO can be enabled via sysctl. */
+int sysctl_tcp_fastopen __read_mostly = TFO_CLIENT_ENABLE;
 
 struct tcp_fastopen_context __rcu *tcp_fastopen_ctx;
 

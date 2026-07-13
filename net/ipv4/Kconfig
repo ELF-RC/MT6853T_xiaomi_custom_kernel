@@ -688,11 +688,11 @@ config TCP_CONG_BBR
 
 choice
 	prompt "Default TCP congestion control"
-	default DEFAULT_BBR if TCP_CONG_BBR=y
 	default DEFAULT_BIC
 	help
 	  Select the TCP congestion control that will be used by default
-	  for all connections.
+	  for all connections. Device defconfigs (e.g. cannon) may still
+	  select BBR explicitly via CONFIG_DEFAULT_TCP_CONG.
 
 	config DEFAULT_BIC
 		bool "Bic" if TCP_CONG_BIC=y
