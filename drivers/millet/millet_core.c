@@ -89,8 +89,12 @@ int millet_can_attach(struct cgroup_taskset *tset)
 	cgroup_taskset_for_each(task, css, tset) {
 		tcred = __task_cred(task);
 
+		/*
+		 * Only Android system (uid/euid 1000) or CAP_SYS_ADMIN may
+		 * migrate foreign tasks into millet-managed freezers.
+		 */
 		if ((current != task) &&
-		    !(cred->euid.val == 1000 ||
+		    !((cred->uid.val == 1000 && cred->euid.val == 1000) ||
 		      capable(CAP_SYS_ADMIN))) {
 			pr_err("Permission problem\n");
 			return 1;
@@ -210,7 +214,8 @@ static void recv_handler(struct sk_buff *skb)
 	}
 
 	uid = (*NETLINK_CREDS(skb)).uid.val;
-	if (uid > 1000) {
+	/* Only root and AID_SYSTEM (1000); reject other system-like UIDs. */
+	if (uid != 0 && uid != 1000) {
 		pr_err("uid: %d, permission denied\n", uid);
 		return;
 	}
