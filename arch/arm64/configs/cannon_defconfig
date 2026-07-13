@@ -5548,11 +5548,10 @@ CONFIG_SBITMAP=y
 CONFIG_USB_PD_REV30=y
 CONFIG_USB_PD_REV30_PPS_SINK=y
 CONFIG_MTK_HANDLE_PPS_TIMEOUT=y
-# Millet frozen framework
-CONFIG_MILLET=y
+# development: no millet / KernelSU sources in tree
+# CONFIG_MILLET is not set
 #DTB
 CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
 CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6853"
-CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-CONFIG_KSU_SUSFS=y
+# CONFIG_KSU is not set
+# SELinux forced permissive remains in security/selinux/* (branch leniency)

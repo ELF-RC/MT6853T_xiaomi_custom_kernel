@@ -100,6 +100,71 @@ jobs:
             LOCALVERSION="-${LOCALVERSION_NAME}" \
             cannon_defconfig
 
+      - name: Assert defconfig truth
+        run: |
+          set -euo pipefail
+          cfg=out/.config
+          test -f "$cfg"
+          branch='${{ matrix.branch }}'
+          if [ "$branch" = "pr" ]; then
+            branch='${{ github.base_ref }}'
+          fi
+          echo "Validating .config for branch=$branch"
+          has_ksu_src=0
+          has_millet_src=0
+          has_susfs_src=0
+          [ -e drivers/kernelsu/Kconfig ] || [ -e KernelSU/kernel/Kconfig ] && has_ksu_src=1 || true
+          [ -e drivers/millet/Kconfig ] && has_millet_src=1 || true
+          [ -e fs/susfs.c ] || [ -e include/linux/susfs.h ] && has_susfs_src=1 || true
+          # Fail on dead symbols that must never appear in .config
+          if grep -qE '^CONFIG_KSU_MANUAL_HOOK=y' "$cfg"; then
+            # Only legal on ReSukiSU trees that define the choice symbol
+            if ! grep -Rqs 'config KSU_MANUAL_HOOK' KernelSU/kernel drivers/kernelsu 2>/dev/null; then
+              echo "::error::CONFIG_KSU_MANUAL_HOOK=y but symbol not defined in tree"
+              exit 1
+            fi
+          fi
+          if grep -qE '^CONFIG_KSU_SUSFS=y' "$cfg"; then
+            if [ "$has_susfs_src" -ne 1 ] && ! grep -Rqs 'config KSU_SUSFS' KernelSU/kernel drivers/kernelsu 2>/dev/null; then
+              echo "::error::CONFIG_KSU_SUSFS=y but no SUSFS sources/Kconfig in tree"
+              exit 1
+            fi
+          fi
+          if grep -qE '^CONFIG_KSU=y' "$cfg"; then
+            if [ "$has_ksu_src" -ne 1 ]; then
+              echo "::error::CONFIG_KSU=y but KernelSU sources missing (branch=$branch)"
+              exit 1
+            fi
+          fi
+          if grep -qE '^CONFIG_MILLET=y' "$cfg"; then
+            if [ "$has_millet_src" -ne 1 ]; then
+              echo "::error::CONFIG_MILLET=y but drivers/millet missing (branch=$branch)"
+              exit 1
+            fi
+          fi
+          # Branch policy checks
+          case "$branch" in
+            main)
+              if grep -qE '^CONFIG_KSU=y' "$cfg"; then
+                echo "::error::main must not enable CONFIG_KSU"
+                exit 1
+              fi
+              ;;
+            development)
+              # development is intentionally permissive (SELinux forced off in source).
+              # Allow CONFIG_KSU only if sources exist; currently expected off.
+              echo "development: permissive SELinux policy preserved in source"
+              ;;
+            KernelSU)
+              grep -qE '^CONFIG_KSU=y' "$cfg" || { echo "::error::KernelSU branch requires CONFIG_KSU=y"; exit 1; }
+              ;;
+            Resukisu)
+              grep -qE '^CONFIG_KSU=y' "$cfg" || { echo "::error::Resukisu branch requires CONFIG_KSU=y"; exit 1; }
+              ;;
+          esac
+          echo "defconfig assertions passed"
+          rg -n 'CONFIG_KSU|CONFIG_MILLET|CONFIG_DEFAULT_TCP_CONG|CONFIG_TCP_CONG_BBR' "$cfg" || true
+
       - name: Build Kernel Image
         run: |
           free -h
