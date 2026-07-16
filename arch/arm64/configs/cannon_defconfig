@@ -5562,5 +5562,9 @@ CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6853"
 # KernelSU (backslashxx): real options come from KernelSU/kernel/Kconfig.
 # Keep only symbols that exist on this branch; SUSFS/manual-hook leftovers removed.
 CONFIG_KSU=y
+CONFIG_KSU_TAMPER_SYSCALL_TABLE=y
+CONFIG_KSU_FEATURE_SULOG=y
+CONFIG_KSU_FEATURE_ADBROOT=y
 # CONFIG_KSU_DEBUG is not set
+CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y
 CONFIG_KSU_LSM_SECURITY_HOOKS=y
