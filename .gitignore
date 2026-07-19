@@ -128,3 +128,15 @@ kernel/configs/android-*.cfg
 out/
 pstore/
 docs/
+
+# Code quality reports
+CODE_QUALITY_REPORT.md
+FIXES_APPLIED.md
+
+# Code quality reports
+CODE_QUALITY_REPORT.md
+FIXES_APPLIED.md
+
+# Code quality reports
+CODE_QUALITY_REPORT.md
+FIXES_APPLIED.md
