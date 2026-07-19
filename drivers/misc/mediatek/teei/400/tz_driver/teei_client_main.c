@@ -261,7 +261,7 @@ struct tz_driver_state *get_tz_drv_state(void)
 
 void *tz_malloc(size_t size, int flags)
 {
-	void *ptr = kmalloc(size, flags | GFP_ATOMIC);
+	void *ptr = kmalloc(size, flags);
 	return ptr;
 }
 

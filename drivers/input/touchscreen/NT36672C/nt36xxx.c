@@ -723,6 +723,17 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 		ret = -EFAULT;
 		goto out;
 	}
+
+	/* Validate user-controlled size to prevent buffer overflow */
+	spi_wr = str[0] >> 7;
+	size_t transfer_len = ((str[0] & 0x7F) << 8) | str[1];
+	
+	if (transfer_len > count - 2) {
+		NVT_ERR("invalid transfer length: %zu (max: %zu)\n", transfer_len, count - 2);
+		ret = -EINVAL;
+		goto out;
+	}
+
 #if NVT_TOUCH_ESD_PROTECT
 	/*
 	 * stop esd check work to avoid case that 0x77 report righ after here to enable esd check again
@@ -732,12 +743,11 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 	nvt_esd_check_enable(false);
 #endif				/* #if NVT_TOUCH_ESD_PROTECT */
 
-	spi_wr = str[0] >> 7;
-	memcpy(buf, str + 2, ((str[0] & 0x7F) << 8) | str[1]);
+	memcpy(buf, str + 2, transfer_len);
 
 	if (spi_wr == NVTWRITE) {	//SPI write
 		while (retries < 20) {
-			ret = CTP_SPI_WRITE(ts->client, buf, ((str[0] & 0x7F) << 8) | str[1]);
+			ret = CTP_SPI_WRITE(ts->client, buf, transfer_len);
 			if (!ret)
 				break;
 			else
@@ -753,7 +763,7 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 		}
 	} else if (spi_wr == NVTREAD) {	//SPI read
 		while (retries < 20) {
-			ret = CTP_SPI_READ(ts->client, buf, ((str[0] & 0x7F) << 8) | str[1]);
+			ret = CTP_SPI_READ(ts->client, buf, transfer_len);
 			if (!ret)
 				break;
 			else
@@ -762,7 +772,7 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 			retries++;
 		}
 
-		memcpy(str + 2, buf, ((str[0] & 0x7F) << 8) | str[1]);
+		memcpy(str + 2, buf, transfer_len);
 		// copy buff to user if spi transfer
 		if (retries < 20) {
 			if (copy_to_user(buff, str, count)) {

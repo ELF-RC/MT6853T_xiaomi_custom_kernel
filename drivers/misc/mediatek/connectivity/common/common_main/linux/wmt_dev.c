@@ -862,7 +862,7 @@ LONG WMT_unlocked_ioctl(struct file *filp, UINT32 cmd, ULONG arg)
 			pBuffer = kmalloc(NAME_MAX + 1, GFP_KERNEL);
 			if (!pBuffer) {
 				WMT_ERR_FUNC("pBuffer kmalloc memory fail\n");
-				return 0;
+				return -ENOMEM;
 			}
 			if (copy_from_user(pBuffer, (PVOID)arg, NAME_MAX)) {
 				iRet = -EFAULT;

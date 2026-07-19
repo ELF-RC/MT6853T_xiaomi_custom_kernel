@@ -46,6 +46,7 @@
 #include <linux/pm_wakeup.h>
 #include <linux/compat.h>
 #include <linux/uaccess.h>
+#include <linux/capability.h>
 #include <linux/sysfs.h>
 #include <linux/notifier.h>  /* FOR SCP REVOCER */
 #ifdef SIGTEST
@@ -572,11 +573,12 @@ static void vow_service_Init(void)
 		vow_pcm_dump_init();
 		vowserv.scp_dual_mic_switch = VOW_ENABLE_DUAL_MIC;
 		vowserv.mtkif_type = 0;
-		//set default value to platform identifier and version
-		memset(vowserv.google_engine_arch, 0, VOW_ENGINE_INFO_LENGTH_BYTE);
-		if (sprintf(vowserv.google_engine_arch, "32fe89be-5205-3d4b-b8cf-55d650d9d200") < 0)
-			VOWDRV_DEBUG("%s(), sprintf fail", __func__);
-		vowserv.google_engine_version = DEFAULT_GOOGLE_ENGINE_VER;
+	//set default value to platform identifier and version
+	memset(vowserv.google_engine_arch, 0, VOW_ENGINE_INFO_LENGTH_BYTE);
+	if (snprintf(vowserv.google_engine_arch, sizeof(vowserv.google_engine_arch),
+			"32fe89be-5205-3d4b-b8cf-55d650d9d200") < 0)
+		VOWDRV_DEBUG("%s(), snprintf fail", __func__);
+	vowserv.google_engine_version = DEFAULT_GOOGLE_ENGINE_VER;
 		memset(vowserv.alexa_engine_version, 0, VOW_ENGINE_INFO_LENGTH_BYTE);
 	} else {
 		int ipi_size;
@@ -2337,6 +2339,10 @@ static long VowDrv_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 {
 	int ret = 0;
 	int timeout = 0;
+
+	/* Require CAP_SYS_ADMIN for sensitive VOW operations */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
 
 	timeout = 0;
 	while (vowserv.vow_recovering) {
