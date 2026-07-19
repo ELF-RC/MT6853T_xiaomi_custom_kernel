@@ -1003,7 +1003,7 @@ static int mtk_pd_adapter_remove(struct platform_device *dev)
 		kfree(info->adapter_svid_list);
 		info->adapter_svid_list = NULL;
 		
-		adapter_dev_unregister(info->adapter_dev);
+		adapter_device_unregister(info->adapter_dev);
 		kfree(info);
 	}
 
