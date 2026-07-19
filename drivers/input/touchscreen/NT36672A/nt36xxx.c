@@ -672,7 +672,7 @@ int32_t nvt_check_fw_reset_state(RST_COMPLETE_STATE check_reset_state)
 		}
 
 		retry++;
-		if(unlikely(retry > retry_max)) {
+		if (unlikely(retry > retry_max)) {
 			NVT_ERR("error, retry=%d, buf[1]=0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X\n",
 				retry, buf[1], buf[2], buf[3], buf[4], buf[5]);
 			ret = -1;
@@ -770,7 +770,7 @@ info_retry:
 		ts->abs_y_max = TOUCH_DEFAULT_MAX_HEIGHT;
 		ts->max_button_num = TOUCH_KEY_NUM;
 
-		if(retry_count < 3) {
+		if (retry_count < 3) {
 			retry_count++;
 			NVT_ERR("retry_count=%d\n", retry_count);
 			goto info_retry;
@@ -822,14 +822,14 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 
 	/* allocate buffer for spi transfer */
 	str = (uint8_t *)kzalloc((count), GFP_KERNEL);
-	if(str == NULL) {
+	if (str == NULL) {
 		NVT_ERR("kzalloc for buf failed!\n");
 		ret = -ENOMEM;
 		goto kzalloc_failed;
 	}
 
 	buf = (uint8_t *)kzalloc((count), GFP_KERNEL | GFP_DMA);
-	if(buf == NULL) {
+	if (buf == NULL) {
 		NVT_ERR("kzalloc for buf failed!\n");
 		ret = -ENOMEM;
 		kfree(str);
@@ -843,6 +843,16 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 		goto out;
 	}
 
+	/* Validate user-controlled size to prevent buffer overflow */
+	spi_wr = str[0] >> 7;
+	size_t transfer_len = ((str[0] & 0x7F) << 8) | str[1];
+	
+	if (transfer_len > count - 2) {
+		NVT_ERR("invalid transfer length: %zu (max: %zu)\n", transfer_len, count - 2);
+		ret = -EINVAL;
+		goto out;
+	}
+
 #if NVT_TOUCH_ESD_PROTECT
 	/*
 	 * stop esd check work to avoid case that 0x77 report righ after here to enable esd check again
@@ -852,12 +862,11 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 	nvt_esd_check_enable(false);
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
-	spi_wr = str[0] >> 7;
-	memcpy(buf, str+2, ((str[0] & 0x7F) << 8) | str[1]);
+	memcpy(buf, str+2, transfer_len);
 
 	if (spi_wr == NVTWRITE) {	//SPI write
 		while (retries < 20) {
-			ret = CTP_SPI_WRITE(ts->client, buf, ((str[0] & 0x7F) << 8) | str[1]);
+			ret = CTP_SPI_WRITE(ts->client, buf, transfer_len);
 			if (!ret)
 				break;
 			else
@@ -873,7 +882,7 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 		}
 	} else if (spi_wr == NVTREAD) {	//SPI read
 		while (retries < 20) {
-			ret = CTP_SPI_READ(ts->client, buf, ((str[0] & 0x7F) << 8) | str[1]);
+			ret = CTP_SPI_READ(ts->client, buf, transfer_len);
 			if (!ret)
 				break;
 			else
@@ -882,7 +891,7 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 			retries++;
 		}
 
-		memcpy(str+2, buf, ((str[0] & 0x7F) << 8) | str[1]);
+		memcpy(str+2, buf, transfer_len);
 		// copy buff to user if spi transfer
 		if (retries < 20) {
 			if (copy_to_user(buff, str, count)) {
@@ -1978,7 +1987,7 @@ static int32_t nvt_ts_probe(struct platform_device *pdev)
 	}
 
 	ts->xbuf = (uint8_t *)kzalloc((NVT_TRANSFER_LEN+1), GFP_KERNEL);
-	if(ts->xbuf == NULL) {
+	if (ts->xbuf == NULL) {
 		NVT_ERR("kzalloc for xbuf failed!\n");
 		if (ts) {
 			kfree(ts);
@@ -2303,14 +2312,14 @@ static int32_t nvt_ts_probe(struct platform_device *pdev)
 #ifdef _DRM_NOTIFY_H_
 	ts->drm_notif.notifier_call = nvt_drm_notifier_callback;
 	ret = drm_register_client(&ts->drm_notif);
-	if(ret) {
+	if (ret) {
 		NVT_ERR("register drm_notifier failed. ret=%d\n", ret);
 		goto err_register_drm_notif_failed;
 	}
 #else
 	ts->fb_notif.notifier_call = nvt_fb_notifier_callback;
 	ret = fb_register_client(&ts->fb_notif);
-	if(ret) {
+	if (ret) {
 		NVT_ERR("register fb_notifier failed. ret=%d\n", ret);
 		goto err_register_fb_notif_failed;
 	}
@@ -2320,7 +2329,7 @@ static int32_t nvt_ts_probe(struct platform_device *pdev)
 	ts->early_suspend.suspend = nvt_ts_early_suspend;
 	ts->early_suspend.resume = nvt_ts_late_resume;
 	ret = register_early_suspend(&ts->early_suspend);
-	if(ret) {
+	if (ret) {
 		NVT_ERR("register early suspend failed. ret=%d\n", ret);
 		goto err_register_early_suspend_failed;
 	}
@@ -2717,7 +2726,7 @@ static int nvt_drm_notifier_callback(struct notifier_block *self, unsigned long 
 	int *blank = NULL;
 	struct nvt_ts_data *ts = container_of(self, struct nvt_ts_data, drm_notif);
 
-	if(!evdata || !evdata->data || !ts) {
+	if (!evdata || !evdata->data || !ts) {
 		NVT_ERR("null pointer\n");
 		return 0;
 	}
@@ -2726,7 +2735,7 @@ static int nvt_drm_notifier_callback(struct notifier_block *self, unsigned long 
 
 	switch (event) {
 	case DRM_EARLY_EVENT_BLANK:
-		if(*blank == DRM_BLANK_POWERDOWN) {
+		if (*blank == DRM_BLANK_POWERDOWN) {
 			NVT_LOG("event=%lu, *blank=%d\n", event, *blank);
 			flush_workqueue(ts->event_wq);
 			nvt_ts_suspend(&ts->client->dev);
@@ -2735,7 +2744,7 @@ static int nvt_drm_notifier_callback(struct notifier_block *self, unsigned long 
 		}
 		break;
 	case DRM_EVENT_BLANK:
-		if(*blank == DRM_BLANK_UNBLANK) {
+		if (*blank == DRM_BLANK_UNBLANK) {
 			NVT_LOG("event=%lu, *blank=%d\n", event, *blank);
 			flush_workqueue(ts->event_wq);
 			queue_work(ts->event_wq, &ts->resume_work);

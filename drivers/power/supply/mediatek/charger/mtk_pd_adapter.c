@@ -996,6 +996,20 @@ err_register_adapter_dev:
 
 static int mtk_pd_adapter_remove(struct platform_device *dev)
 {
+	struct mtk_pd_adapter_info *info = platform_get_drvdata(dev);
+
+	if (info != NULL) {
+		/* Free allocated adapter_svid_list to prevent memory leak */
+		kfree(info->adapter_svid_list);
+		info->adapter_svid_list = NULL;
+		
+		adapter_dev_unregister(info->adapter_dev);
+		kfree(info);
+	}
+
+	return 0;
+}
+
 	return 0;
 }
 
