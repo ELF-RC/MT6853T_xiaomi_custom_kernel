@@ -1010,9 +1010,6 @@ static int mtk_pd_adapter_remove(struct platform_device *dev)
 	return 0;
 }
 
-	return 0;
-}
-
 static void mtk_pd_adapter_shutdown(struct platform_device *dev)
 {
 }
