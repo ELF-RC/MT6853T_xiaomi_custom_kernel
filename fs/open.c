@@ -32,6 +32,8 @@
 #include <linux/dnotify.h>
 #include <linux/compat.h>
 
+#include <trace/hooks/fs.h>
+
 #include "internal.h"
 
 int do_truncate2(struct vfsmount *mnt, struct dentry *dentry, loff_t length,
@@ -1080,6 +1082,11 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 	struct open_flags op;
 	int fd = build_open_flags(flags, mode, &op);
 	struct filename *tmp;
+
+	/* Vendor hook: file open */
+	trace_android_rvh_do_sys_open(dfd, filename, flags, mode, &fd);
+	if (fd < 0)
+		return fd;
 
 	if (fd)
 		return fd;
