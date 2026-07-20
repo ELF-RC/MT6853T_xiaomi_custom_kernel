@@ -11,6 +11,7 @@
 #include "tune.h"
 
 #include <trace/events/sched.h>
+#include <trace/hooks/sched.h>
 
 #include "walt.h"
 
@@ -1498,6 +1499,12 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags,
 {
 	struct task_struct *curr;
 	struct rq *rq;
+	int target_cpu = -1;
+
+	/* Vendor hook: allow override of RT CPU selection */
+	trace_android_rvh_select_task_rq_rt(p, cpu, sd_flag, flags, &target_cpu);
+	if (target_cpu >= 0)
+		return target_cpu;
 
 	/* For anything but wake ups, just return the task_cpu */
 	if (sd_flag != SD_BALANCE_WAKE && sd_flag != SD_BALANCE_FORK

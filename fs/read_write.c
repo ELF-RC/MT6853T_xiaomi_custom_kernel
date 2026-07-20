@@ -22,6 +22,8 @@
 #include <linux/fs.h>
 #include "internal.h"
 
+#include <trace/hooks/fs.h>
+
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 
@@ -433,6 +435,9 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
 
+	/* Vendor hook: file read */
+	trace_android_rvh_vfs_read(file, buf, count, pos, &ret);
+
 	if (!(file->f_mode & FMODE_READ))
 		return -EBADF;
 	if (!(file->f_mode & FMODE_CAN_READ))
@@ -530,6 +535,9 @@ EXPORT_SYMBOL(kernel_write);
 ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
+
+	/* Vendor hook: file write */
+	trace_android_rvh_vfs_write(file, buf, count, pos, &ret);
 
 	if (!(file->f_mode & FMODE_WRITE))
 		return -EBADF;

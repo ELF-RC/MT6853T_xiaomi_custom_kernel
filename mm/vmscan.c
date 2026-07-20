@@ -57,9 +57,10 @@
 #include <linux/swapops.h>
 #include <linux/balloon_compaction.h>
 
+#include <trace/hooks/vmscan.h>
+
 #include "internal.h"
 
-#define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 
 struct scan_control {
@@ -987,11 +988,14 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 	unsigned nr_unqueued_dirty = 0;
 	unsigned nr_dirty = 0;
 	unsigned nr_congested = 0;
-	unsigned nr_reclaimed = 0;
+	unsigned long nr_reclaimed = 0;
 	unsigned nr_writeback = 0;
 	unsigned nr_immediate = 0;
 	unsigned nr_ref_keep = 0;
 	unsigned nr_unmap_fail = 0;
+
+	/* Vendor hook: page list shrink */
+	trace_android_vh_shrink_page_list(page_list, pgdat, sc, stat, &nr_reclaimed);
 
 	cond_resched();
 

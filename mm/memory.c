@@ -72,6 +72,7 @@
 #include <linux/oom.h>
 
 #include <trace/events/kmem.h>
+#include <trace/hooks/mm.h>
 
 #include <asm/io.h>
 #include <asm/mmu_context.h>
@@ -3405,6 +3406,9 @@ static int do_anonymous_page(struct vm_fault *vmf)
 	struct page *page;
 	int ret = 0;
 	pte_t entry;
+
+	/* Vendor hook: anonymous page allocation */
+	trace_android_rvh_do_anonymous_page(vmf);
 
 	/* File mapping without ->vm_ops ? */
 	if (vmf->vma_flags & VM_SHARED)

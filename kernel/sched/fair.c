@@ -35,6 +35,7 @@
 #include <linux/task_work.h>
 
 #include <trace/events/sched.h>
+#include <trace/hooks/sched.h>
 
 #include "sched.h"
 #include "tune.h"
@@ -5374,6 +5375,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	int task_new = !(flags & ENQUEUE_WAKEUP);
 	int is_idle = idle_cpu(cpu_of(rq));
 
+	/* Vendor hook for enqueue */
+	trace_android_rvh_enqueue_task(rq, p);
+
 	/*
 	 * The code below (indirectly) updates schedutil which looks at
 	 * the cfs_rq utilization to select a frequency.
@@ -5471,6 +5475,9 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct cfs_rq *cfs_rq;
 	struct sched_entity *se = &p->se;
 	int task_sleep = flags & DEQUEUE_SLEEP;
+
+	/* Vendor hook for dequeue */
+	trace_android_rvh_dequeue_task(rq, p);
 
 	/*
 	 * The code below (indirectly) updates schedutil which looks at
@@ -8512,10 +8519,20 @@ pick_cpu:
 
 static inline int
 select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag,
-			int wake_flags, int sibling_count_hint)
+		int wake_flags, int sibling_count_hint)
 {
 	int result = 0;
 	int cpu;
+	int target_cpu = -1;
+
+	/* Vendor hook: allow override of CPU selection */
+	trace_android_rvh_select_task_rq_fair(p, prev_cpu, sd_flag, wake_flags, &target_cpu);
+	if (target_cpu >= 0) {
+		trace_sched_select_task_rq(p, target_cpu, prev_cpu, target_cpu,
+				task_util_est(p), boosted_task_util(p),
+				(schedtune_prefer_idle(p) > 0), wake_flags);
+		return target_cpu;
+	}
 
 	result = SELECT_TASK_RQ_FAIR(p, prev_cpu, sd_flag, wake_flags,
 			sibling_count_hint);
@@ -10987,6 +11004,11 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 		.fbq_type	= all,
 		.tasks		= LIST_HEAD_INIT(env.tasks),
 	};
+
+	/* Vendor hook: early load balance override */
+	trace_android_rvh_before_load_balance(this_cpu, this_rq, sd, idle, continue_balancing);
+	if (!(*continue_balancing))
+		return 0;
 
 	cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
 

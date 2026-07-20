@@ -128,3 +128,11 @@ kernel/configs/android-*.cfg
 out/
 pstore/
 docs/
+
+# Code quality reports
+CODE_QUALITY_REPORT.md
+FIXES_APPLIED.md
+
+# Vendor Hooks Analysis Documents
+VENDOR_HOOKS_ANALYSIS.md
+VENDOR_HOOKS_QUICK_START.md
