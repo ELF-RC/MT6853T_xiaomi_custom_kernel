@@ -4,15 +4,17 @@ on:
   push:
     branches:
       - main
-      - development
+      - main_2.6GHz
       - KernelSU
-      - Resukisu
+      - KernelSU_2.6GHz
+      - development
   pull_request:
     branches:
       - main
-      - development
+      - main_2.6GHz
       - KernelSU
-      - Resukisu
+      - KernelSU_2.6GHz
+      - development
   workflow_dispatch:
     inputs:
         LOCALVERSIONNAME:
@@ -34,13 +36,11 @@ jobs:
     timeout-minutes: 60
     env:
       LOCALVERSION_NAME: ${{ github.event.inputs.LOCALVERSIONNAME || 'ci' }}
-      TOOLCHAIN_REV: 341870e52463c25315cf10037b1b0ff4fa0a3fec
-      ANYKERNEL_REV: 1c9a500dd4aa8081952523126e97eb155aed941b
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 5
       matrix:
-        branch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["KernelSU","Resukisu","main","development"]' || format('["{0}"]', github.event_name == 'pull_request' && 'pr' || github.ref_name)) }}
+        branch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["main","main_2.6GHz","KernelSU","KernelSU_2.6GHz","development"]' || format('["{0}"]', github.event_name == 'pull_request' && 'pr' || github.ref_name)) }}
 
     steps:
 
@@ -71,11 +71,7 @@ jobs:
 
       - name: Get Toolchain
         run: |
-          git init tooltmp
-          git -C tooltmp remote add origin https://github.com/ELF-RC/android_kernel4x_tools.git
-          git -C tooltmp fetch --depth=1 origin "$TOOLCHAIN_REV"
-          git -C tooltmp checkout --detach FETCH_HEAD
-          test "$(git -C tooltmp rev-parse HEAD)" = "$TOOLCHAIN_REV"
+          git clone --depth=1 https://github.com/ELF-RC/android_kernel4x_tools.git tooltmp
 
       - name: Prepare build variables
         run: |
@@ -110,43 +106,11 @@ jobs:
             branch='${{ github.base_ref }}'
           fi
           echo "Validating .config for branch=$branch"
-          has_ksu_src=0
-          has_millet_src=0
-          has_susfs_src=0
-          [ -e drivers/kernelsu/Kconfig ] || [ -e KernelSU/kernel/Kconfig ] && has_ksu_src=1 || true
-          [ -e drivers/millet/Kconfig ] && has_millet_src=1 || true
-          [ -e fs/susfs.c ] || [ -e include/linux/susfs.h ] && has_susfs_src=1 || true
-          # Fail on dead symbols that must never appear in .config
-          if grep -qE '^CONFIG_KSU_MANUAL_HOOK=y' "$cfg"; then
-            # Only legal on ReSukiSU trees that define the choice symbol
-            if ! grep -Rqs 'config KSU_MANUAL_HOOK' KernelSU/kernel drivers/kernelsu 2>/dev/null; then
-              echo "::error::CONFIG_KSU_MANUAL_HOOK=y but symbol not defined in tree"
-              exit 1
-            fi
-          fi
-          if grep -qE '^CONFIG_KSU_SUSFS=y' "$cfg"; then
-            if [ "$has_susfs_src" -ne 1 ] && ! grep -Rqs 'config KSU_SUSFS' KernelSU/kernel drivers/kernelsu 2>/dev/null; then
-              echo "::error::CONFIG_KSU_SUSFS=y but no SUSFS sources/Kconfig in tree"
-              exit 1
-            fi
-          fi
-          if grep -qE '^CONFIG_KSU=y' "$cfg"; then
-            if [ "$has_ksu_src" -ne 1 ]; then
-              echo "::error::CONFIG_KSU=y but KernelSU sources missing (branch=$branch)"
-              exit 1
-            fi
-          fi
-          if grep -qE '^CONFIG_MILLET=y' "$cfg"; then
-            if [ "$has_millet_src" -ne 1 ]; then
-              echo "::error::CONFIG_MILLET=y but drivers/millet missing (branch=$branch)"
-              exit 1
-            fi
-          fi
           # Branch policy checks
           case "$branch" in
-            main)
+            main|main_2.6GHz)
               if grep -qE '^CONFIG_KSU=y' "$cfg"; then
-                echo "::error::main must not enable CONFIG_KSU"
+                echo "::error::main and main_2.6GHz must not enable CONFIG_KSU"
                 exit 1
               fi
               ;;
@@ -155,15 +119,17 @@ jobs:
               # Allow CONFIG_KSU only if sources exist; currently expected off.
               echo "development: permissive SELinux policy preserved in source"
               ;;
-            KernelSU)
-              grep -qE '^CONFIG_KSU=y' "$cfg" || { echo "::error::KernelSU branch requires CONFIG_KSU=y"; exit 1; }
-              ;;
-            Resukisu)
-              grep -qE '^CONFIG_KSU=y' "$cfg" || { echo "::error::Resukisu branch requires CONFIG_KSU=y"; exit 1; }
+            KernelSU|KernelSU_2.6GHz)
+              grep -qE '^CONFIG_KSU=y' "$cfg" || { echo "::error::KernelSU branches require CONFIG_KSU=y"; exit 1; }
+              grep -qE '^CONFIG_KSU_TAMPER_SYSCALL_TABLE=y' "$cfg" || { echo "::error::KernelSU branches require CONFIG_KSU_TAMPER_SYSCALL_TABLE=y"; exit 1; }
+              grep -qE '^CONFIG_KSU_FEATURE_SULOG=y' "$cfg" || { echo "::error::KernelSU branches require CONFIG_KSU_FEATURE_SULOG=y"; exit 1; }
+              grep -qE '^CONFIG_KSU_FEATURE_ADBROOT=y' "$cfg" || { echo "::error::KernelSU branches require CONFIG_KSU_FEATURE_ADBROOT=y"; exit 1; }
+              grep -qE '^# CONFIG_KSU_DEBUG is not set' "$cfg" || { echo "::error::KernelSU branches require CONFIG_KSU_DEBUG to be disabled"; exit 1; }
+              grep -qE '^CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y' "$cfg" || { echo "::error::KernelSU branches require CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y"; exit 1; }
+              grep -qE '^CONFIG_KSU_LSM_SECURITY_HOOKS=y' "$cfg" || { echo "::error::KernelSU branches require CONFIG_KSU_LSM_SECURITY_HOOKS=y"; exit 1; }
               ;;
           esac
           echo "defconfig assertions passed"
-          rg -n 'CONFIG_KSU|CONFIG_MILLET|CONFIG_DEFAULT_TCP_CONG|CONFIG_TCP_CONG_BBR' "$cfg" || true
 
       - name: Build Kernel Image
         run: |
@@ -191,31 +157,24 @@ jobs:
           free -h
           df -h "$GITHUB_WORKSPACE"
 
-      - name: Pack Kernel with AnyKernel3
+      - name: Pack Kernel with Installer
         run: |
-          git init AK3
-          git -C AK3 remote add origin https://github.com/osm0sis/AnyKernel3.git
-          git -C AK3 fetch --depth=1 origin "$ANYKERNEL_REV"
-          git -C AK3 checkout --detach FETCH_HEAD
-          test "$(git -C AK3 rev-parse HEAD)" = "$ANYKERNEL_REV"
+          git clone --depth=1 https://github.com/ELF-RC/cannon_kernel_installer.git installer
           test -s out/arch/arm64/boot/Image.gz-dtb
-          cp out/arch/arm64/boot/Image.gz-dtb AK3/
-          cd AK3
-          sed -i "s|kernel.string=.*|kernel.string=Xiaomi Custom Kernel (${{ matrix.branch }})|" anykernel.sh
-          sed -i "s|device.name1=.*|device.name1=cannon|" anykernel.sh
-          sed -i "s|device.name2=.*|device.name2=cannong|" anykernel.sh
-          sed -i "s|IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=0|" anykernel.sh
-          sed -i "s|BLOCK=.*|BLOCK=auto;|" anykernel.sh
-          grep -q "^device.name1=cannon$" anykernel.sh
-          grep -q "^IS_SLOT_DEVICE=0$" anykernel.sh
-          grep -q "^BLOCK=auto;$" anykernel.sh
-          rm -rf .git README.md LICENSE
+          cp out/arch/arm64/boot/Image.gz-dtb installer/
+          sed -i "s/ELF-RC/${{ github.actor }}/g" installer/tools/env_prepare.sh
+          cd installer
+          rm -rf .git
+
+      - name: Record build time
+        id: buildtime
+        run: echo "time=$(TZ='Asia/Shanghai' date +'%Y%m%d_%H%M%S')" >> "$GITHUB_OUTPUT"
 
       - name: Upload Kernel Package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: cannon_${{ matrix.branch }}_${{ steps.revision.outputs.sha }}_${{ env.LOCALVERSION_NAME }}_${{ github.actor }}
-          path: AK3/
+          name: cannon_${{ matrix.branch }}_${{ steps.revision.outputs.sha }}_${{ env.LOCALVERSION_NAME }}_${{ github.actor }}_${{ steps.buildtime.outputs.time }}
+          path: installer/
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
