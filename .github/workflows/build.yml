@@ -64,6 +64,16 @@ jobs:
         with:
           ref: ${{ matrix.branch == 'pr' && github.event.pull_request.head.sha || matrix.branch }}
           submodules: recursive
+          fetch-depth: 1
+
+      - name: Update submodules if present
+        run: |
+          if [ -f .gitmodules ]; then
+            echo "Found .gitmodules, updating submodules..."
+            git submodule update --init --recursive --depth 1
+          else
+            echo "No .gitmodules found, skipping submodule update"
+          fi
 
       - name: Record source revision
         id: revision
