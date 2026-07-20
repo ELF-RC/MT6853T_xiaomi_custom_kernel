@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <trace/events/power.h>
 #include <trace/events/sched.h>
+#include <trace/hooks/sched.h>
 
 #include "sched.h"
 #include "tune.h"
@@ -230,6 +231,9 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 
 	freq = freq * util / max;
 	freq = freq / SCHED_CAPACITY_SCALE * capacity_margin;
+
+	/* Vendor hook: allow freq adjustment */
+	trace_android_rvh_cpufreq_transition(policy->cpu, &freq);
 
 	sg_policy->cached_raw_freq = freq;
 #ifdef CONFIG_MTK_TINYSYS_SSPM_SUPPORT

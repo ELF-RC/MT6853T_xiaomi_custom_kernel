@@ -77,6 +77,7 @@
 #include "binder_alloc.h"
 #include "binder_internal.h"
 #include "binder_trace.h"
+#include <trace/hooks/binder.h>
 #ifdef CONFIG_MTK_TASK_TURBO
 #include <mt-plat/turbo_common.h>
 #endif
@@ -1822,14 +1823,18 @@ static void binder_do_set_priority(struct task_struct *task,
 }
 
 static void binder_set_priority(struct task_struct *task,
-				struct binder_priority desired)
+			struct binder_priority desired)
 {
-	binder_do_set_priority(task, desired, /* verify = */ true);
+	bool skip = false;
+	trace_android_vh_binder_set_priority(NULL, task, &skip);
+	if (!skip)
+		binder_do_set_priority(task, desired, /* verify = */ true);
 }
 
 static void binder_restore_priority(struct task_struct *task,
 				    struct binder_priority desired)
 {
+	trace_android_vh_binder_restore_priority(NULL, task);
 	binder_do_set_priority(task, desired, /* verify = */ false);
 }
 
