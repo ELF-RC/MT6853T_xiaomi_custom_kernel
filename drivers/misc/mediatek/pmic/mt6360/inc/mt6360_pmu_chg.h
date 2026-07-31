@@ -116,6 +116,14 @@ struct mt6360_chg_platform_data {
 #define MT6360_MASK_USB_STATUS	(0x70)
 #define MT6360_SHFT_USB_STATUS	(4)
 
+/* MT6360_PMU_DPDM_CTRL (0x28) QC2.0 command values */
+/* QC2.0 D+ 0.6V handshake command */
+#define MT6360_QC2_DP0V6_CMD		0x18
+/* QC2.0 fallback / D+ 0.6V then D- 0.6V command */
+#define MT6360_QC2_FALLBACK_CMD		0x16
+/* Disable DPDM QC signaling */
+#define MT6360_QC_DISABLE_CMD		0x00
+
 /* MT6360_PMU_CHG_CTRL16 : 0x2A */
 #define MT6360_MASK_AICC_VTH	(0xFE)
 #define MT6360_SHFT_AICC_VTH	(1)
