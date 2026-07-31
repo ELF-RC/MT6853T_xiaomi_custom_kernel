@@ -96,6 +96,11 @@ struct mt6360_pmu_chg_info {
 	struct work_struct chgdet_work;
 #endif /* CONFIG_TCPC_CLASS */
 
+	/* HVDCP (QC2.0/3.0) fast charging */
+	bool hvdcp_disabled; /* Set externally to disable QC detection */
+	struct delayed_work hvdcp_work;
+	struct mutex hvdcp_lock;
+
 	struct completion aicc_done;
 	struct completion pumpx_done;
 	atomic_t pe_complete;
@@ -591,6 +596,7 @@ static int mt6360_chgdet_post_process(struct mt6360_pmu_chg_info *mpci)
 	dev_dbg(mpci->dev, "%s: attach = %d\n", __func__, attach);
 	/* Plug out during BC12 */
 	if (!attach) {
+		cancel_delayed_work_sync(&mpci->hvdcp_work);
 		mpci->chg_type = CHARGER_UNKNOWN;
 		goto out;
 	}
@@ -614,7 +620,26 @@ static int mt6360_chgdet_post_process(struct mt6360_pmu_chg_info *mpci)
 		mpci->chg_type = CHARGING_HOST;
 		break;
 	case MT6360_CHG_TYPE_DCP:
-		mpci->chg_type = STANDARD_CHARGER;
+		if (mpci->hvdcp_disabled) {
+			/* QC detection disabled, report DCP immediately */
+			dev_info(mpci->dev, "%s: hvdcp_disabled, DCP\n",
+				 __func__);
+			mpci->chg_type = STANDARD_CHARGER;
+		} else {
+			/* DCP detected, start QC2.0 HVDCP detection */
+			dev_info(mpci->dev, "%s: DCP detected, start QC2\n",
+				 __func__);
+			mpci->chg_type = CHECK_HV;
+			/* Notify framework we're checking HV */
+			ret = mt6360_psy_chg_type_changed(mpci);
+			if (ret < 0)
+				dev_err(mpci->dev,
+					"%s: psy CHECK_HV fail\n", __func__);
+			/* Schedule HVDCP handshake after 375 jiffies (~6s) */
+			schedule_delayed_work(&mpci->hvdcp_work, 375);
+			/* Skip normal DCP notification for now */
+			inform_psy = false;
+		}
 		break;
 	}
 out:
@@ -1004,6 +1029,156 @@ static int mt6360_enable_te(struct charger_device *chg_dev, bool en)
 	return mt6360_pmu_reg_update_bits(mpci->mpi, MT6360_PMU_CHG_CTRL2,
 					  MT6360_MASK_TE_EN, en ? 0xff : 0);
 }
+
+#ifdef CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT
+/*
+ * mt6360_hvdcp_work_handler - Qualcomm QC2.0 HVDCP handshake via DPDM
+ *
+ * Reverse-engineered from Xiaomi MIUI proprietary kernel binary.
+ * Protocol sequence:
+ * 1. Write 0x18 to DPDM_CTRL (0x28) - request D+ 0.6V (QC2.0 "Hello")
+ * 2. Wait 300ms for charger to process and switch voltage
+ * 3. Read VBUS ADC 3 times with 30ms intervals (median filter)
+ * 4. If VBUS > 7201mV -> QC2.0 success, report HVDCP_CHARGER (11)
+ * 5. If VBUS 3000-7200mV -> not a QC charger, fallback to DCP (4)
+ * 6. If VBUS < 3000mV -> charger detached, report CHARGER_UNKNOWN (0)
+ */
+static void mt6360_hvdcp_work_handler(struct work_struct *work)
+{
+	struct mt6360_pmu_chg_info *mpci =
+		container_of(work, struct mt6360_pmu_chg_info,
+			     hvdcp_work.work);
+	int ret, i;
+	int vbus[3], vbus_median;
+	bool pwr_rdy = false;
+
+	mutex_lock(&mpci->hvdcp_lock);
+
+	/* Check charger is still attached */
+#ifdef CONFIG_TCPC_CLASS
+	pwr_rdy = mpci->tcpc_attach;
+#else
+	ret = mt6360_get_chrdet_ext_stat(mpci, &pwr_rdy);
+	if (ret < 0)
+		goto out;
+#endif
+	if (!pwr_rdy) {
+		dev_dbg(mpci->dev, "%s: charger detached, skip QC\n",
+			__func__);
+		goto out;
+	}
+
+	/* If QC detection is disabled, just report as DCP */
+	if (mpci->hvdcp_disabled) {
+		dev_info(mpci->dev, "%s: hvdcp_disabled, report DCP\n",
+			 __func__);
+		mpci->chg_type = STANDARD_CHARGER;
+		ret = mt6360_psy_chg_type_changed(mpci);
+		if (ret < 0)
+			dev_err(mpci->dev, "%s: psy chg_type fail\n", __func__);
+		goto out;
+	}
+
+	dev_info(mpci->dev, "%s: start QC2 handshake\n", __func__);
+
+	/* Step 1: Write QC2.0 D+ 0.6V command to DPDM_CTRL register */
+	ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
+				  MT6360_QC2_DP0V6_CMD);
+	if (ret < 0) {
+		dev_err(mpci->dev, "%s: write DPDM_CTRL fail\n", __func__);
+		goto qc_fail;
+	}
+
+	/* Step 2: Wait for charger to process voltage switch */
+	msleep(300);
+
+	/* Step 3: Read VBUS ADC 3 times with 30ms intervals */
+	for (i = 0; i < 3; i++) {
+		ret = iio_read_channel_processed(
+			mpci->channels[MT6360_ADC_VBUSDIV5], &vbus[i]);
+		if (ret < 0) {
+			dev_err(mpci->dev,
+				"%s: read VBUS ADC fail (i=%d)\n",
+				__func__, i);
+			goto qc_fail;
+		}
+		if (i < 2)
+			msleep(30);
+	}
+
+	/* Median filter: sort 3 readings and pick the middle one */
+	if (vbus[0] > vbus[1])
+		swap(vbus[0], vbus[1]);
+	if (vbus[1] > vbus[2])
+		swap(vbus[1], vbus[2]);
+	if (vbus[0] > vbus[1])
+		swap(vbus[0], vbus[1]);
+	vbus_median = vbus[1];
+
+	dev_info(mpci->dev, "%s: VBUS ADC = %d mV\n", __func__,
+		 vbus_median);
+
+	/* Step 4: Determine QC result based on VBUS voltage */
+	if (vbus_median > 7201) {
+		/* QC2.0 success - charger switched to 9V */
+		dev_info(mpci->dev, "%s: Get QC2 succ, VBUS=%d\n",
+			 __func__, vbus_median);
+		mpci->chg_type = HVDCP_CHARGER;
+		ret = mt6360_psy_chg_type_changed(mpci);
+		if (ret < 0)
+			dev_err(mpci->dev, "%s: psy chg_type fail\n",
+				__func__);
+		goto out;
+	} else if (vbus_median >= 3000 && vbus_median <= 7200) {
+		/* Not a QC charger - fallback to DCP */
+		dev_info(mpci->dev, "%s: QC fail, VBUS=%d, fallback DCP\n",
+			 __func__, vbus_median);
+		ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
+					  MT6360_QC2_FALLBACK_CMD);
+		if (ret < 0)
+			dev_err(mpci->dev,
+				"%s: write DPDM_CTRL fallback fail\n",
+				__func__);
+		mpci->chg_type = STANDARD_CHARGER;
+		ret = mt6360_psy_chg_type_changed(mpci);
+		if (ret < 0)
+			dev_err(mpci->dev, "%s: psy chg_type fail\n", __func__);
+		goto out;
+	} else {
+		/* VBUS < 3000mV - likely detached or bad contact */
+		dev_warn(mpci->dev, "%s: VBUS too low=%d, disable chgdet\n",
+			 __func__, vbus_median);
+		ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
+					  MT6360_QC_DISABLE_CMD);
+		if (ret < 0)
+			dev_err(mpci->dev,
+				"%s: write DPDM_CTRL disable fail\n",
+				__func__);
+		mpci->chg_type = CHARGER_UNKNOWN;
+		ret = mt6360_psy_chg_type_changed(mpci);
+		if (ret < 0)
+			dev_err(mpci->dev, "%s: psy chg_type fail\n", __func__);
+		goto out;
+	}
+
+qc_fail:
+	/* On any error, fallback to DCP */
+	dev_err(mpci->dev, "%s: QC handshake error, fallback DCP\n",
+		__func__);
+	ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
+				  MT6360_QC_DISABLE_CMD);
+	if (ret < 0)
+		dev_err(mpci->dev, "%s: write DPDM_CTRL disable fail\n",
+			__func__);
+	mpci->chg_type = STANDARD_CHARGER;
+	ret = mt6360_psy_chg_type_changed(mpci);
+	if (ret < 0)
+		dev_err(mpci->dev, "%s: psy chg_type fail\n", __func__);
+
+out:
+	mutex_unlock(&mpci->hvdcp_lock);
+}
+#endif /* CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT */
 
 static int mt6360_enable_pump_express(struct mt6360_pmu_chg_info *mpci,
 				      bool pe20)
@@ -2196,14 +2371,20 @@ static irqreturn_t mt6360_pmu_detachi_handler(int irq, void *data)
 static irqreturn_t mt6360_pmu_hvdcp_det_handler(int irq, void *data)
 {
 	struct mt6360_pmu_chg_info *mpci = data;
-      	int ret, i;
-	dev_info(mpci->dev, "%s: HVDCP IRQ fired!\n", __func__);
-	/* Dump registers 0x20~0x2F to find HVDCP status bit */
-	for (i = 0x20; i <= 0x2F; i++) {
-		ret = mt6360_pmu_reg_read(mpci->mpi, i);
-		if (ret >= 0)
-			dev_info(mpci->dev, "  [0x%02X]=0x%02X\n", i, (u8)ret);
+
+	dev_info(mpci->dev, "%s: HVDCP detect IRQ fired\n", __func__);
+
+#ifdef CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT
+	/* The HVDCP IRQ fires when DPDM voltage change is detected.
+	 * This confirms QC charger presence - trigger immediate check.
+	 * The delayed_work will read VBUS and determine the result.
+	 */
+	if (mpci->chg_type == CHECK_HV) {
+		/* Cancel pending delayed work and run immediately */
+		cancel_delayed_work_sync(&mpci->hvdcp_work);
+		schedule_delayed_work(&mpci->hvdcp_work, 0);
 	}
+#endif /* CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT */
 
 	return IRQ_HANDLED;
 }
@@ -2774,11 +2955,13 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 	mutex_init(&mpci->chgdet_lock);
 	mutex_init(&mpci->tchg_lock);
 	mutex_init(&mpci->ichg_lock);
+	mutex_init(&mpci->hvdcp_lock);
 	mpci->tchg = 0;
 	mpci->ichg = 2000000;
 	mpci->ichg_dis_chg = 2000000;
 	mpci->attach = false;
 	mpci->chg_type = CHARGER_UNKNOWN;
+	mpci->hvdcp_disabled = false;
 	g_mpci = mpci;
 #if defined(CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT)\
 && !defined(CONFIG_TCPC_CLASS)
@@ -2855,6 +3038,9 @@ static int mt6360_pmu_chg_probe(struct platform_device *pdev)
 		goto err_shipping_mode_attr;
 	}
 	INIT_WORK(&mpci->pe_work, mt6360_trigger_pep_work_handler);
+#ifdef CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT
+	INIT_DELAYED_WORK(&mpci->hvdcp_work, mt6360_hvdcp_work_handler);
+#endif /* CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT */
 
 	/* register fg bat oc notify */
 	if (pdata->batoc_notify)
@@ -2887,6 +3073,9 @@ static int mt6360_pmu_chg_remove(struct platform_device *pdev)
 	dev_dbg(mpci->dev, "%s\n", __func__);
 	flush_workqueue(mpci->pe_wq);
 	destroy_workqueue(mpci->pe_wq);
+#ifdef CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT
+	cancel_delayed_work_sync(&mpci->hvdcp_work);
+#endif /* CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT */
 	if (mpci->mivr_task) {
 		kthread_stop(mpci->mivr_task);
 		atomic_inc(&mpci->mivr_cnt);
@@ -2899,6 +3088,7 @@ static int mt6360_pmu_chg_remove(struct platform_device *pdev)
 	mutex_destroy(&mpci->aicr_lock);
 	mutex_destroy(&mpci->pe_lock);
 	mutex_destroy(&mpci->hidden_mode_lock);
+	mutex_destroy(&mpci->hvdcp_lock);
 	return 0;
 }
 
