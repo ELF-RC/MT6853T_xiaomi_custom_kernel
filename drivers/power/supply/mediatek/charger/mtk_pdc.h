@@ -39,6 +39,12 @@ struct pdc_data {
 	int pd_vbus_upper_bound;
 	int ibus_err;
 	int vsys_watt;
+
+	/* cable impedance compensation */
+	int cable_imp_threshold;	/* mOhm: above this, cable is bad */
+	int vbat_cable_imp_threshold;	/* uV: VBAT threshold for cable check */
+	int pd_r_cable_1a_lower;	/* mOhm: cable R threshold at 1A */
+	int pd_r_cable_2a_lower;	/* mOhm: cable R threshold at 2A */
 };
 
 struct pdc {
@@ -65,6 +71,11 @@ struct pdc {
 	bool is_cable_out_occur;
 
 	int pdc_input_current_limit_setting;	/* TA */
+
+	/* cable impedance measurement result (mOhm) */
+	int r_cable;
+	bool cable_imp_checked;
+	bool cable_imp_good;
 };
 
 extern int pdc_init(void);

@@ -647,6 +647,9 @@ static int mtk_switch_chr_pe40_run(struct charger_manager *info)
 	data->input_current_limit = info->chg1_data.input_current_limit;
 	data->charging_current_limit = info->chg1_data.charging_current_limit;
 	data->pe40_max_vbus = pdata->pe40_max_vbus;
+	data->pe40_max_ibus = pdata->pe40_max_ibus;
+	data->ibus_err = pdata->ibus_err;
+	data->min_charger_voltage = pdata->min_charger_voltage;
 	data->high_temp_to_leave_pe40 = pdata->high_temp_to_leave_pe40;
 	data->high_temp_to_enter_pe40 = pdata->high_temp_to_enter_pe40;
 	data->low_temp_to_leave_pe40 = pdata->low_temp_to_leave_pe40;
@@ -801,11 +804,21 @@ static int mtk_switch_chr_pdc_run(struct charger_manager *info)
 	select_pdc_charging_current_limit(info);
 
 	data = pdc_get_data();
+	if (!data) {
+		chr_err("%s: data is NULL\n", __func__);
+		goto stop;
+	}
 
 	data->input_current_limit = info->chg1_data.input_current_limit;
 	data->charging_current_limit = info->chg1_data.charging_current_limit;
 	data->pd_vbus_low_bound = pdata->pd_vbus_low_bound;
 	data->pd_vbus_upper_bound = pdata->pd_vbus_upper_bound;
+
+	/* cable impedance compensation params */
+	data->cable_imp_threshold = pdata->cable_imp_threshold;
+	data->vbat_cable_imp_threshold = pdata->vbat_cable_imp_threshold;
+	data->pd_r_cable_1a_lower = pdata->pe40_r_cable_1a_lower;
+	data->pd_r_cable_2a_lower = pdata->pe40_r_cable_2a_lower;
 
 	data->battery_cv = pdata->battery_cv;
 	if (info->enable_sw_jeita) {
