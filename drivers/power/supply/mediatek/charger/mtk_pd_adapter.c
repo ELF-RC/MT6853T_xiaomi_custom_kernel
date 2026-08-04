@@ -102,11 +102,18 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 			pinfo->adapter_dev->uvdm_state = USBPD_UVDM_DISCONNECT;
 			pinfo->adapter_dev->verifed = 0;
 			pinfo->adapter_dev->verify_process = 0;
+			/* Clear cached source-cap so next attach is clean */
+			memset(&ta_cap, 0, sizeof(ta_cap));
 			notify_adapter_event(MTK_PD_ADAPTER,
 				MTK_PD_CONNECT_NONE, NULL);
 			break;
 
 		case PD_CONNECT_HARD_RESET:
+			/* Hard reset invalidates prior UVDM/auth state */
+			pinfo->adapter_dev->adapter_svid = 0;
+			pinfo->adapter_dev->uvdm_state = USBPD_UVDM_DISCONNECT;
+			pinfo->adapter_dev->verifed = 0;
+			pinfo->adapter_dev->verify_process = 0;
 			notify_adapter_event(MTK_PD_ADAPTER,
 				MTK_PD_CONNECT_HARD_RESET, NULL);
 			break;
@@ -476,7 +483,6 @@ APDO_REGAIN:
 				tacap->type[i] = MTK_PD_APDO;
 			else
 				tacap->type[i] = MTK_CAP_TYPE_UNKNOWN;
-			tacap->type[i] = pd_cap.type[i];
 
 			chr_err("[%s]:%d mv:[%d,%d] %d max:%d min:%d type:%d %d\n",
 				__func__, i, tacap->min_mv[i],

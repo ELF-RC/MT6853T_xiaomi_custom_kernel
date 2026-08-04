@@ -16,16 +16,100 @@
 #include <linux/delay.h>
 #include <linux/time.h>
 #include <linux/slab.h>
+#include <mt-plat/mtk_battery.h>
 #include "mtk_intf.h"
 
 #define PD_MIN_WATT 5000000
 #define PD_VBUS_IR_DROP_THRESHOLD 1200
+
+/* Cable impedance measurement currents (mA) */
+#define PDC_CABLE_MEAS_HIGH_CURRENT	2500000	/* 2.5A */
+#define PDC_CABLE_MEAS_LOW_CURRENT	500000	/* 0.5A */
+#define PDC_CABLE_MEAS_HIGH_MA		2500
+#define PDC_CABLE_MEAS_LOW_MA		500
 
 static struct pdc *pd;
 
 bool pdc_is_ready(void)
 {
 	return adapter_is_support_pd();
+}
+
+/*
+ * pdc_check_cable_impedance - measure cable resistance via dual-current sampling
+ *
+ * Method: set input current to HIGH (2.5A) and LOW (0.5A), measure VBUS at
+ * each point. Cable R = |V1 - V2| / |I1 - I2| (in mOhm).
+ * Result is stored in pd->r_cable and used to:
+ *   1. Limit max input current based on cable quality thresholds
+ *   2. Compensate voltage request in pdc_get_setting() for IR drop
+ *
+ * Reference: MediaTek PE4.0 cable compensation in mtk_pe40.c lines 515-534
+ *            and mtk_pdc_intf.c mtk_pdc_check_cable_impedance()
+ */
+static void pdc_check_cable_impedance(void)
+{
+	int vchr1 = 0, vchr2 = 0;
+	int old_aicr = 0;
+	bool mivr_state = false;
+	int cable_imp;
+
+	if (!pd || pd->cable_imp_checked)
+		return;
+
+	/* Skip if battery voltage too low (pre-charge) */
+	if (battery_get_bat_voltage() * 1000 < pd->data.vbat_cable_imp_threshold) {
+		chr_err("%s: VBAT too low (%d uV < %d uV), skip\n",
+			__func__, battery_get_bat_voltage() * 1000,
+			pd->data.vbat_cable_imp_threshold);
+		pd->cable_imp_checked = true;
+		pd->r_cable = 0;
+		pd->cable_imp_good = true;
+		return;
+	}
+
+	/* Save current input current limit */
+	charger_get_input_current(&old_aicr);
+
+	/* Set high current, wait for VBUS to settle */
+	charger_set_input_current(PDC_CABLE_MEAS_HIGH_CURRENT);
+	msleep(250);
+
+	/* Check MIVR (minimum input voltage regulation) - if active,
+	 * charger can't maintain voltage → cable is too resistive */
+	charger_get_mivr_state(&mivr_state);
+	if (mivr_state) {
+		chr_err("%s: MIVR triggered at high current, cable bad\n",
+			__func__);
+		cable_imp = pd->data.cable_imp_threshold + 1;
+		goto done;
+	}
+
+	vchr1 = battery_get_vbus();	/* returns mV */
+
+	/* Set low current, wait for VBUS to settle */
+	charger_set_input_current(PDC_CABLE_MEAS_LOW_CURRENT);
+	msleep(150);
+
+	vchr2 = battery_get_vbus();
+
+	/* Calculate cable impedance: R = |V1 - V2| / |I1 - I2| in mOhm
+	 * V in mV, I in mA → R in mOhm directly
+	 */
+	cable_imp = (vchr1 > vchr2 ? vchr1 - vchr2 : vchr2 - vchr1) * 1000 /
+			    (PDC_CABLE_MEAS_HIGH_MA - PDC_CABLE_MEAS_LOW_MA);
+
+done:
+	pd->r_cable = cable_imp;
+	pd->cable_imp_checked = true;
+	pd->cable_imp_good = (cable_imp < pd->data.cable_imp_threshold);
+
+	/* Restore original input current limit */
+	charger_set_input_current(old_aicr);
+
+	chr_err("%s: r_cable=%d mOhm vchr1=%d vchr2=%d threshold=%d good=%d\n",
+		__func__, cable_imp, vchr1, vchr2,
+		pd->data.cable_imp_threshold, pd->cable_imp_good);
 }
 
 void pdc_init_table(void)
@@ -164,13 +248,14 @@ int pdc_get_idx(int selected_idx,
 	return 0;
 }
 
-int pdc_setup(int idx)
+	int pdc_setup(int idx)
 {
 	int ret = -100;
 	unsigned int mivr;
 	unsigned int oldmivr = 4600000;
 	unsigned int oldmA = 3000000;
 	bool force_update = false;
+	int vbus_ir_drop;
 
 	if (pd->pd_idx == idx) {
 		charger_get_mivr(&oldmivr);
@@ -179,6 +264,16 @@ int pdc_setup(int idx)
 			PD_VBUS_IR_DROP_THRESHOLD)
 			force_update = true;
 	}
+
+	/*
+	 * Calculate expected IR drop across cable:
+	 * - If cable impedance was measured, use I × R (mOhm × mA / 1000 = mV)
+	 * - Otherwise fall back to fixed 1200mV threshold
+	 */
+	if (pd->cable_imp_checked && pd->r_cable > 0)
+		vbus_ir_drop = pd->r_cable * pd->cap.ma[idx] / 1000;
+	else
+		vbus_ir_drop = PD_VBUS_IR_DROP_THRESHOLD;
 
 	if (pd->pd_idx != idx || force_update) {
 		if (pd->cap.max_mv[idx] > 5000)
@@ -203,10 +298,9 @@ int pdc_setup(int idx)
 				charger_set_input_current(pd->cap.ma[idx]
 								* 1000);
 
-			if ((pd->cap.max_mv[idx] - PD_VBUS_IR_DROP_THRESHOLD)
-				> mivr)
-				mivr = pd->cap.max_mv[idx] -
-					PD_VBUS_IR_DROP_THRESHOLD;
+			/* MIVR = adapter voltage - cable IR drop */
+			if ((pd->cap.max_mv[idx] - vbus_ir_drop) > mivr)
+				mivr = pd->cap.max_mv[idx] - vbus_ir_drop;
 
 			pdc_set_mivr(mivr * 1000);
 		} else {
@@ -219,9 +313,11 @@ int pdc_setup(int idx)
 		pdc_get_idx(idx, &pd->pd_boost_idx, &pd->pd_buck_idx);
 	}
 
-	chr_err("[%s]idx:%d:%d:%d:%d vbus:%d cur:%d ret:%d\n", __func__,
+	chr_err("[%s]idx:%d:%d:%d:%d vbus:%d cur:%d ret:%d ir_drop:%d r_cable:%d\n",
+		__func__,
 		pd->pd_idx, idx, pd->pd_boost_idx, pd->pd_buck_idx,
-		pd->cap.max_mv[idx], pd->cap.ma[idx], ret);
+		pd->cap.max_mv[idx], pd->cap.ma[idx], ret,
+		vbus_ir_drop, pd->r_cable);
 
 	pd->pd_idx = idx;
 
@@ -269,6 +365,10 @@ int pdc_reset(void)
 
 int pdc_stop(void)
 {
+	/* Clear cable measurement so it re-runs on next attach */
+	pd->cable_imp_checked = false;
+	pd->r_cable = 0;
+	pd->cable_imp_good = true;
 	pdc_reset();
 
 	return 0;
@@ -340,6 +440,33 @@ int pdc_get_setting(int *newvbus, int *newcur,
 
 	*newvbus = cap->max_mv[*newidx];
 	*newcur = cap->ma[*newidx];
+
+	/*
+	 * Cable impedance compensation: limit input current if cable
+	 * resistance is high, so the adapter can actually deliver the
+	 * requested voltage at the charger IC input.
+	 * Note: For fixed PDO we cannot adjust the requested voltage,
+	 * so cable IR drop is handled in pdc_setup() via MIVR adjustment.
+	 */
+	if (pd->cable_imp_checked) {
+		if (pd->cable_imp_good) {
+			/* Cable is good: allow full current */
+		} else {
+			/* Cable is bad: limit current based on resistance level */
+			if (pd->r_cable < pd->data.pd_r_cable_2a_lower) {
+				if (*newcur > 2000)
+					*newcur = 2000;
+			} else if (pd->r_cable < pd->data.pd_r_cable_1a_lower) {
+				if (*newcur > 1500)
+					*newcur = 1500;
+			} else {
+				if (*newcur > 1000)
+					*newcur = 1000;
+			}
+			chr_err("%s: bad cable, limit cur to %d mA (r_cable=%d)\n",
+				__func__, *newcur, pd->r_cable);
+		}
+	}
 
 	chr_err("[%s]watt:%d,%d,%d up:%d,%d vbus:%d ibus:%d, mivr:%d\n",
 		__func__,
@@ -418,6 +545,12 @@ int pdc_init(void)
 		pd->data.ibus_err = 14;
 		pd->data.vsys_watt = 5000000;
 
+		/* cable impedance defaults (mOhm) */
+		pd->data.cable_imp_threshold = 699;	/* 0x2bb */
+		pd->data.vbat_cable_imp_threshold = 3900000; /* 0x3b8260 uV = 3.9V */
+		pd->data.pd_r_cable_1a_lower = 553;	/* 0x229 */
+		pd->data.pd_r_cable_2a_lower = 415;	/* 0x19f */
+
 		pd->pdc_input_current_limit_setting = -1;
 		pd->pdc_max_watt_setting = -1;
 		pd->pd_cap_max_watt = -1;
@@ -427,6 +560,9 @@ int pdc_init(void)
 		pd->pd_buck_idx = 0;
 		pd->vbus_l = 5000;
 		pd->vbus_h = 5000;
+		pd->r_cable = 0;
+		pd->cable_imp_checked = false;
+		pd->cable_imp_good = true;
 
 		return 0;
 	}
@@ -449,6 +585,10 @@ int pdc_set_data(struct pdc_data data)
 	pd->data.pd_vbus_upper_bound = data.pd_vbus_upper_bound;
 	pd->data.ibus_err = data.ibus_err;
 	pd->data.vsys_watt = data.vsys_watt;
+	pd->data.cable_imp_threshold = data.cable_imp_threshold;
+	pd->data.vbat_cable_imp_threshold = data.vbat_cable_imp_threshold;
+	pd->data.pd_r_cable_1a_lower = data.pd_r_cable_1a_lower;
+	pd->data.pd_r_cable_2a_lower = data.pd_r_cable_2a_lower;
 
 	chr_err("[%s]%d %d %d %d %d %d %d %d\n", __func__,
 		pd->data.input_current_limit,
@@ -495,6 +635,9 @@ int pdc_run(void)
 	pd->vbus_l = pd->data.pd_vbus_low_bound / 1000;
 	pd->vbus_h = pd->data.pd_vbus_upper_bound / 1000;
 
+	/* Measure cable impedance once, on first run after attach */
+	pdc_check_cable_impedance();
+
 	pdc_set_cv();
 
 	ret = pdc_get_setting(&vbus, &cur, &idx);
@@ -507,9 +650,9 @@ int pdc_run(void)
 
 	ret = pdc_check_leave();
 
-	chr_err("[%s]vbus:%d input_cur:%d idx:%d current:%d ret:%d\n",
+	chr_err("[%s]vbus:%d input_cur:%d idx:%d current:%d ret:%d r_cable:%d\n",
 			__func__, vbus, cur, idx,
-			pd->data.input_current_limit, ret);
+			pd->data.input_current_limit, ret, pd->r_cable);
 
 	return ret;
 }

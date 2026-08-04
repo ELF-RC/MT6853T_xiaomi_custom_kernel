@@ -3628,6 +3628,10 @@ _out:
 	return ret;
 }
 
+/* standalone direct-charge reset (mtk_pe40.c / mtk_pdc.c) */
+extern int pe40_stop(void);
+extern int pdc_stop(void);
+
 void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 	void *val)
 {
@@ -3662,7 +3666,10 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 				pinfo->data.ac_charger_input_current;
 			charger_dev_set_input_current(pinfo->chg1_dev,
 				pinfo->chg1_data.input_current_limit);
-			/* reset PE40 */
+			/* reset PE40 / PDC direct-charge state machines */
+			pinfo->leave_pe4 = true;
+			pe40_stop();
+			pdc_stop();
 			break;
 
 		case MTK_PD_CONNECT_HARD_RESET:
@@ -3684,7 +3691,10 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 					power_supply_changed(usb_psy);
 				}
 			}
-			/* reset PE40 */
+			/* reset PE40 / PDC direct-charge after hard reset */
+			pinfo->leave_pe4 = true;
+			pe40_stop();
+			pdc_stop();
 			break;
 
 		case MTK_PD_CONNECT_PE_READY_SNK:
@@ -3796,12 +3806,22 @@ void notify_adapter_event(enum adapter_type type, enum adapter_event evt,
 			chr_err("PD Notify APDO Ready\n");
 			pinfo->pd_type = MTK_PD_CONNECT_PE_READY_SNK_APDO;
 			mutex_unlock(&pinfo->charger_pd_lock);
-			/* PE40 is ready */
+			/*
+			 * APDO (PPS) connection: the PE4.0/PDC direct-charge
+			 * engines drive the PPS voltage/current negotiation in
+			 * a closed loop, so just mark online and wake the
+			 * charger thread to enter CHR_PE40/CHR_PDC.
+			 */
+			pinfo->leave_pe4 = false;
+			pinfo->leave_pdc = false;
 			{
 				struct power_supply *usb_psy =
 					power_supply_get_by_name("usb");
 				if (usb_psy) {
 					union power_supply_propval val = {0};
+					val.intval = 1;
+					power_supply_set_property(usb_psy,
+						POWER_SUPPLY_PROP_ONLINE, &val);
 					val.intval = 1;
 					power_supply_set_property(usb_psy,
 						POWER_SUPPLY_PROP_PD_AUTHENTICATION, &val);
