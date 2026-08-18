@@ -35,6 +35,8 @@
 #include <linux/pstore_ram.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/utsname.h>
+#include <linux/sched.h>
 
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
@@ -176,6 +178,7 @@ static int ramoops_read_kmsg_hdr(char *buffer, struct timespec *time,
 {
 	char data_type;
 	int header_length = 0;
+	char *p;
 
 	if (sscanf(buffer, RAMOOPS_KERNMSG_HDR "%lu.%lu-%c\n%n", &time->tv_sec,
 			&time->tv_nsec, &data_type, &header_length) == 3) {
@@ -191,6 +194,22 @@ static int ramoops_read_kmsg_hdr(char *buffer, struct timespec *time,
 		time->tv_nsec = 0;
 		*compressed = false;
 	}
+
+	/*
+	 * Skip any additional header comment lines (starting with '#')
+	 * that were added by the enhanced write header.
+	 */
+	if (header_length > 0) {
+		p = buffer + header_length;
+		while (*p == '#') {
+			char *eol = strchr(p, '\n');
+			if (!eol)
+				break;
+			header_length += (eol - p) + 1;
+			p = eol + 1;
+		}
+	}
+
 	return header_length;
 }
 
@@ -384,10 +403,29 @@ static size_t ramoops_write_kmsg_hdr(struct persistent_ram_zone *prz,
 	char *hdr;
 	size_t len;
 
-	hdr = kasprintf(GFP_ATOMIC, RAMOOPS_KERNMSG_HDR "%lu.%lu-%c\n",
+	/*
+	 * Header format (read-compatible with ramoops_read_kmsg_hdr):
+	 * Line 1: ==== <sec>.<usec>-<C|D>\n   (standard, parsed by reader)
+	 * Line 2: # reason=<N> part=<N> count=<N> size=<N> cpu=<N> task=<name>(<pid>)\n
+	 * Line 3: # kernel <version>\n
+	 * All lines together form the header; header_length covers everything.
+	 */
+	hdr = kasprintf(GFP_ATOMIC,
+		RAMOOPS_KERNMSG_HDR "%lu.%lu-%c\n"
+		"# reason=%d part=%u count=%d size=%zu cpu=%u task=%.16s(%d)\n"
+		"# kernel %s %s\n",
 		record->time.tv_sec,
 		record->time.tv_nsec / 1000,
-		record->compressed ? 'C' : 'D');
+		record->compressed ? 'C' : 'D',
+		record->reason,
+		record->part,
+		record->count,
+		record->size,
+		smp_processor_id(),
+		current->comm,
+		current->pid,
+		utsname()->release,
+		utsname()->version);
 	WARN_ON_ONCE(!hdr);
 	len = hdr ? strlen(hdr) : 0;
 	persistent_ram_write(prz, hdr, len);
@@ -440,11 +478,16 @@ static int notrace ramoops_pstore_write(struct pstore_record *record)
 		return -EINVAL;
 
 	/*
-	 * Out of the various dmesg dump types, ramoops is currently designed
-	 * to only store crash logs, rather than storing general kernel logs.
+	 * Accept all crash dump reasons for detailed logging:
+	 * PANIC, OOPS, EMERG, RESTART, HALT, POWEROFF
+	 * This ensures we capture the maximum possible diagnostic info.
 	 */
 	if (record->reason != KMSG_DUMP_OOPS &&
-	    record->reason != KMSG_DUMP_PANIC)
+	    record->reason != KMSG_DUMP_PANIC &&
+	    record->reason != KMSG_DUMP_EMERG &&
+	    record->reason != KMSG_DUMP_RESTART &&
+	    record->reason != KMSG_DUMP_HALT &&
+	    record->reason != KMSG_DUMP_POWEROFF)
 		return -EINVAL;
 
 	/* Skip Oopes when configured to do so. */
@@ -482,6 +525,10 @@ static int notrace ramoops_pstore_write(struct pstore_record *record)
 	if (size + hlen > prz->buffer_size)
 		size = prz->buffer_size - hlen;
 	persistent_ram_write(prz, record->buf, size);
+
+	pr_info("pstore: wrote part%u reason=%d size=%zu/%zu to zone %u\n",
+		record->part, record->reason, size,
+		record->size, cxt->dump_write_cnt);
 
 	cxt->dump_write_cnt = (cxt->dump_write_cnt + 1) % cxt->max_dump_cnt;
 
@@ -819,9 +866,11 @@ static int ramoops_probe(struct platform_device *pdev)
 	cxt->flags = pdata->flags;
 	cxt->ecc_info = pdata->ecc_info;
 
-	pr_notice("pstore:address is 0x%lx, size is 0x%lx, console_size is 0x%zx, pmsg_size is 0x%zx\n",
-			(unsigned long)cxt->phys_addr, cxt->size,
-			cxt->console_size, cxt->pmsg_size);
+	pr_notice("pstore: address=0x%lx total_size=0x%lx\n",
+			(unsigned long)cxt->phys_addr, cxt->size);
+	pr_notice("pstore: record_size=0x%zx console_size=0x%zx ftrace_size=0x%zx pmsg_size=0x%zx\n",
+			cxt->record_size, cxt->console_size,
+			cxt->ftrace_size, cxt->pmsg_size);
 	paddr = cxt->phys_addr;
 
 	dump_mem_sz = cxt->size - cxt->console_size * 2 - cxt->ftrace_size
@@ -911,6 +960,13 @@ static int ramoops_probe(struct platform_device *pdev)
 	pr_info("attached 0x%lx@0x%llx, ecc: %d/%d\n",
 		cxt->size, (unsigned long long)cxt->phys_addr,
 		cxt->ecc_info.ecc_size, cxt->ecc_info.block_size);
+	pr_info("pstore zones: dump_cnt=%u (record_size=%zu), console=%s, ftrace_cnt=%u, pmsg=%s\n",
+		cxt->max_dump_cnt, cxt->record_size,
+		cxt->cprz ? "yes" : "no",
+		cxt->max_ftrace_cnt,
+		cxt->mprz ? "yes" : "no");
+	pr_info("pstore flags: 0x%x, dump_oops=%d, bufsize=%zu\n",
+		cxt->pstore.flags, cxt->dump_oops, cxt->pstore.bufsize);
 
 	return 0;
 
