@@ -591,93 +591,9 @@ out:
 	kfree(trie);
 }
 
-static int trie_get_next_key(struct bpf_map *map, void *_key, void *_next_key)
+static int trie_get_next_key(struct bpf_map *map, void *key, void *next_key)
 {
-	struct lpm_trie_node *node, *next_node = NULL, *parent, *search_root;
-	struct lpm_trie *trie = container_of(map, struct lpm_trie, map);
-	struct bpf_lpm_trie_key *key = _key, *next_key = _next_key;
-	struct lpm_trie_node **node_stack = NULL;
-	int err = 0, stack_ptr = -1;
-	unsigned int next_bit;
-	size_t matchlen = 0;
-
-	/* Iterate in postorder so more specific keys precede their prefixes. */
-	search_root = rcu_dereference(trie->root);
-	if (!search_root)
-		return -ENOENT;
-
-	/* BPF_MAP_GET_NEXT_KEY starts over when the supplied key is invalid. */
-	if (!key || key->prefixlen > trie->max_prefixlen)
-		goto find_leftmost;
-
-	/* Prefix lengths strictly increase down a path. Include both /0 and
-	 * /max_prefixlen in the worst-case stack depth.
-	 */
-	node_stack = kmalloc_array(trie->max_prefixlen + 1,
-				   sizeof(struct lpm_trie_node *),
-				   GFP_ATOMIC | __GFP_NOWARN);
-	if (!node_stack)
-		return -ENOMEM;
-
-	/* Find the exact node while recording the path back to the root. */
-	for (node = search_root; node;) {
-		node_stack[++stack_ptr] = node;
-		matchlen = longest_prefix_match(trie, node, key);
-		if (node->prefixlen != matchlen ||
-		    node->prefixlen == key->prefixlen)
-			break;
-
-		next_bit = extract_bit(key->data, node->prefixlen);
-		node = rcu_dereference(node->child[next_bit]);
-	}
-	if (!node || node->prefixlen != key->prefixlen ||
-	    node->prefixlen != matchlen ||
-	    (node->flags & LPM_TREE_NODE_FLAG_IM))
-		goto find_leftmost;
-
-	/* The exact node follows both of its subtrees in postorder. Walk up
-	 * until a right subtree or a non-intermediate parent comes next.
-	 */
-	node = node_stack[stack_ptr];
-	while (stack_ptr > 0) {
-		parent = node_stack[stack_ptr - 1];
-		if (rcu_dereference(parent->child[0]) == node) {
-			search_root = rcu_dereference(parent->child[1]);
-			if (search_root)
-				goto find_leftmost;
-		}
-		if (!(parent->flags & LPM_TREE_NODE_FLAG_IM)) {
-			next_node = parent;
-			goto do_copy;
-		}
-
-		node = parent;
-		stack_ptr--;
-	}
-
-	err = -ENOENT;
-	goto free_stack;
-
-find_leftmost:
-	/* Find the first real node in postorder. Intermediate nodes always
-	 * have two children; real nodes may have either child or both.
-	 */
-	for (node = search_root; node;) {
-		if (node->flags & LPM_TREE_NODE_FLAG_IM) {
-			node = rcu_dereference(node->child[0]);
-		} else {
-			next_node = node;
-			node = rcu_dereference(node->child[0]);
-			if (!node)
-				node = rcu_dereference(next_node->child[1]);
-		}
-	}
-do_copy:
-	next_key->prefixlen = next_node->prefixlen;
-	memcpy(next_key->data, next_node->data, trie->data_size);
-free_stack:
-	kfree(node_stack);
-	return err;
+	return -ENOTSUPP;
 }
 
 const struct bpf_map_ops trie_map_ops = {
