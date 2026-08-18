@@ -45,6 +45,12 @@
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
 #include <linux/io.h>
+#include <linux/version.h>
+#include <linux/utsname.h>
+#include <linux/sched.h>
+#include <linux/nmi.h>
+#include <linux/rcupdate.h>
+#include <linux/timekeeping.h>
 
 #include "internal.h"
 
@@ -121,19 +127,19 @@ static const char *get_reason_str(enum kmsg_dump_reason reason)
 {
 	switch (reason) {
 	case KMSG_DUMP_PANIC:
-		return "Panic";
+		return "Kernel Panic";
 	case KMSG_DUMP_OOPS:
-		return "Oops";
+		return "Kernel Oops";
 	case KMSG_DUMP_EMERG:
-		return "Emergency";
+		return "Emergency Restart";
 	case KMSG_DUMP_RESTART:
-		return "Restart";
+		return "Normal Restart";
 	case KMSG_DUMP_HALT:
-		return "Halt";
+		return "System Halt";
 	case KMSG_DUMP_POWEROFF:
-		return "Poweroff";
+		return "System Poweroff";
 	default:
-		return "Unknown";
+		return "Unknown Reason";
 	}
 }
 
@@ -549,9 +555,45 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 			dst_size = psinfo->bufsize;
 		}
 
-		/* Write dump header. */
-		header_size = snprintf(dst, dst_size, "%s#%d Part%u\n", why,
-				 oopscount, part);
+		/*
+		 * Write detailed dump header with comprehensive system info.
+		 * This provides critical context for post-mortem analysis:
+		 * - Crash type and sequence number
+		 * - Kernel version and build info
+		 * - Timestamp (uptime in seconds)
+		 * - CPU number where crash occurred
+		 * - Current task name and PID
+		 * - Interrupt context indicator
+		 */
+		{
+			u64 boot_ns = ktime_get_boot_ns();
+			unsigned long boot_sec = (unsigned long)(boot_ns / 1000000000UL);
+			unsigned long boot_nsec = (unsigned long)(boot_ns % 1000000000UL);
+
+			header_size = snprintf(dst, dst_size,
+				"##########################################\n"
+				"# pstore crash dump - %s #%d Part%u\n"
+				"# Kernel: %s %s\n"
+				"# Build:  %s %s\n"
+				"# Uptime: %lu.%09lu seconds\n"
+				"# CPU:    %u / %u online\n"
+				"# Task:   %s (pid %d, tgid %d)\n"
+				"# NMI:    %s\n"
+				"# In IRQ: %s\n"
+				"# Oops count since boot: %d\n"
+				"# kmsg capture size: %lu bytes\n"
+				"##########################################\n",
+				why, oopscount, part,
+				utsname()->sysname, utsname()->release,
+				utsname()->version, utsname()->machine,
+				boot_sec, boot_nsec,
+				smp_processor_id(), num_online_cpus(),
+				current->comm, current->pid, current->tgid,
+				in_nmi() ? "YES" : "NO",
+				in_irq() ? "YES" : "NO",
+				oopscount,
+				kmsg_bytes);
+		}
 		dst_size -= header_size;
 
 		/* Write dump contents. */
@@ -784,7 +826,18 @@ int pstore_register(struct pstore_info *psi)
 	 */
 	backend = psi->name;
 
-	pr_info("Registered %s as persistent store backend\n", psi->name);
+	pr_info("Registered '%s' as persistent store backend\n", psi->name);
+	pr_info("  bufsize=%zu, flags=0x%x\n", psi->bufsize, psi->flags);
+	if (psi->flags & PSTORE_FLAGS_DMESG)
+		pr_info("  frontend: DMESG enabled\n");
+	if (psi->flags & PSTORE_FLAGS_CONSOLE)
+		pr_info("  frontend: CONSOLE enabled\n");
+	if (psi->flags & PSTORE_FLAGS_FTRACE)
+		pr_info("  frontend: FTRACE enabled\n");
+	if (psi->flags & PSTORE_FLAGS_PMSG)
+		pr_info("  frontend: PMSG enabled\n");
+	pr_info("  kmsg_bytes=%lu, update_ms=%d\n",
+		kmsg_bytes, pstore_update_ms);
 
 	module_put(owner);
 
@@ -835,6 +888,8 @@ static void decompress_record(struct pstore_record *record)
 		return;
 	}
 
+	pr_info("decompressing record: compressed_size=%zu\n", record->size);
+
 	unzipped_len = pstore_decompress(record->buf, big_oops_buf,
 					 record->size, big_oops_buf_sz);
 	if (unzipped_len <= 0) {
@@ -842,11 +897,16 @@ static void decompress_record(struct pstore_record *record)
 		return;
 	}
 
+	pr_info("decompressed: %zu -> %d bytes (%lu%% ratio)\n",
+		record->size, unzipped_len,
+		record->size > 0 ? (100UL * unzipped_len / record->size) : 0UL);
+
 	/* Build new buffer for decompressed contents. */
 	decompressed = kmalloc(unzipped_len + record->ecc_notice_size,
 			       GFP_KERNEL);
 	if (!decompressed) {
-		pr_err("decompression ran out of memory\n");
+		pr_err("decompression ran out of memory (requested %zu)\n",
+			(size_t)(unzipped_len + record->ecc_notice_size));
 		return;
 	}
 	memcpy(decompressed, big_oops_buf, unzipped_len);
@@ -872,10 +932,13 @@ void pstore_get_backend_records(struct pstore_info *psi,
 				struct dentry *root, int quiet)
 {
 	int failed = 0;
+	int total_read = 0;
 	unsigned int stop_loop = 65536;
 
 	if (!psi || !root)
 		return;
+
+	pr_info("reading records from backend '%s'...\n", psi->name);
 
 	mutex_lock(&psi->read_mutex);
 	if (psi->open && psi->open(psi))
@@ -905,6 +968,8 @@ void pstore_get_backend_records(struct pstore_info *psi,
 			break;
 		}
 
+		total_read++;
+
 		decompress_record(record);
 		rc = pstore_mkfile(root, record);
 		if (rc) {
@@ -920,6 +985,8 @@ void pstore_get_backend_records(struct pstore_info *psi,
 out:
 	mutex_unlock(&psi->read_mutex);
 
+	pr_info("backend '%s': read %d record(s), %d failed\n",
+		psi->name, total_read, failed);
 	if (failed)
 		pr_warn("failed to create %d record(s) from '%s'\n",
 			failed, psi->name);
