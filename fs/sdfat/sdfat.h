@@ -212,11 +212,8 @@ struct sdfat_inode_info {
 	struct inode vfs_inode;
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+/* current_time() returns struct timespec64 since the vfs time64 backports */
 typedef struct timespec64	sdfat_timespec_t;
-#else /* LINUX_VERSION_CODE < KERNEL_VERSION(4, 18, 0) */
-typedef struct timespec		sdfat_timespec_t;
-#endif
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)

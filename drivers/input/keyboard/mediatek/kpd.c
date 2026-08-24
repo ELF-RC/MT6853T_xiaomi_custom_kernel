@@ -34,6 +34,7 @@ atomic_t vol_down_long_press_flag = ATOMIC_INIT(0);
 
 int kpd_klog_en;
 void __iomem *kp_base;
+
 static unsigned int kp_irqnr;
 struct input_dev *kpd_input_dev;
 static struct dentry *kpd_droot;
