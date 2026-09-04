@@ -1094,6 +1094,20 @@ static void mt6360_hvdcp_work_handler(struct work_struct *work)
 
 	dev_info(mpci->dev, "%s: start QC2 handshake\n", __func__);
 
+	/*
+	 * Reset DPDM lines to idle before starting QC2 handshake.
+	 * Without this, a charger that was in QC mode from a previous
+	 * boot will still be outputting 9V, causing a false positive
+	 * VBUS reading >7201mV → immediate "QC2 succ" regardless of
+	 * what charger is actually connected.
+	 */
+	ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
+				  MT6360_QC_DISABLE_CMD);
+	if (ret < 0)
+		dev_err(mpci->dev, "%s: pre-reset DPDM_CTRL fail\n",
+			__func__);
+	msleep(50);  /* Let charger respond to DPDM reset */
+
 	/* Step 1: Write QC2.0 D+ 0.6V command to DPDM_CTRL register */
 	ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
 				  MT6360_QC2_DP0V6_CMD);
