@@ -620,6 +620,18 @@ static int mt6360_chgdet_post_process(struct mt6360_pmu_chg_info *mpci)
 		mpci->chg_type = CHARGING_HOST;
 		break;
 	case MT6360_CHG_TYPE_DCP:
+#ifdef CONFIG_TCPC_CLASS
+		/*
+		 * Type-C port: PD negotiation happens on CC lines.
+		 * Do NOT start QC2 handshake - writing D+ 0.6V to DPDM
+		 * corrupts PD-capable chargers' state machines and prevents
+		 * subsequent PD handshakes. PD framework handles voltage
+		 * negotiation; report DCP immediately.
+		 */
+		dev_info(mpci->dev, "%s: DCP on Type-C, skip QC2\n",
+			 __func__);
+		mpci->chg_type = STANDARD_CHARGER;
+#else
 		if (mpci->hvdcp_disabled) {
 			/* QC detection disabled, report DCP immediately */
 			dev_info(mpci->dev, "%s: hvdcp_disabled, DCP\n",
@@ -640,6 +652,7 @@ static int mt6360_chgdet_post_process(struct mt6360_pmu_chg_info *mpci)
 			/* Skip normal DCP notification for now */
 			inform_psy = false;
 		}
+#endif /* CONFIG_TCPC_CLASS */
 		break;
 	}
 out:
@@ -1081,6 +1094,20 @@ static void mt6360_hvdcp_work_handler(struct work_struct *work)
 
 	dev_info(mpci->dev, "%s: start QC2 handshake\n", __func__);
 
+	/*
+	 * Reset DPDM lines to idle before starting QC2 handshake.
+	 * Without this, a charger that was in QC mode from a previous
+	 * boot will still be outputting 9V, causing a false positive
+	 * VBUS reading >7201mV → immediate "QC2 succ" regardless of
+	 * what charger is actually connected.
+	 */
+	ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
+				  MT6360_QC_DISABLE_CMD);
+	if (ret < 0)
+		dev_err(mpci->dev, "%s: pre-reset DPDM_CTRL fail\n",
+			__func__);
+	msleep(50);  /* Let charger respond to DPDM reset */
+
 	/* Step 1: Write QC2.0 D+ 0.6V command to DPDM_CTRL register */
 	ret = mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
 				  MT6360_QC2_DP0V6_CMD);
@@ -1139,6 +1166,9 @@ static void mt6360_hvdcp_work_handler(struct work_struct *work)
 			dev_err(mpci->dev,
 				"%s: write DPDM_CTRL fallback fail\n",
 				__func__);
+		/* Clear DPDM to ensure D+/D- are in idle state */
+		mt6360_pmu_reg_write(mpci->mpi, MT6360_PMU_DPDM_CTRL,
+				    MT6360_QC_DISABLE_CMD);
 		mpci->chg_type = STANDARD_CHARGER;
 		ret = mt6360_psy_chg_type_changed(mpci);
 		if (ret < 0)
@@ -2380,8 +2410,11 @@ static irqreturn_t mt6360_pmu_hvdcp_det_handler(int irq, void *data)
 	 * The delayed_work will read VBUS and determine the result.
 	 */
 	if (mpci->chg_type == CHECK_HV) {
-		/* Cancel pending delayed work and run immediately */
-		cancel_delayed_work_sync(&mpci->hvdcp_work);
+		/* Cancel pending delayed work and run immediately.
+		 * Note: use cancel_delayed_work() not cancel_delayed_work_sync()
+		 * because we are in hard IRQ context (_sync variant can sleep).
+		 */
+		cancel_delayed_work(&mpci->hvdcp_work);
 		schedule_delayed_work(&mpci->hvdcp_work, 0);
 	}
 #endif /* CONFIG_MT6360_PMU_CHARGER_TYPE_DETECT */
