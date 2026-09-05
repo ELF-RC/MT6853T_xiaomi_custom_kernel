@@ -27,6 +27,10 @@
 #include <linux/major.h>
 #include <linux/reboot.h>
 #include <linux/sysrq.h>
+#include <trace/hooks/sysrqcrash.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 #include <linux/kbd_kern.h>
 #include <linux/proc_fs.h>
 #include <linux/nmi.h>
@@ -136,6 +140,8 @@ static void sysrq_handle_crash(int key)
 {
 	/* release the RCU read lock before crashing */
 	rcu_read_unlock();
+
+	trace_android_vh_sysrq_crash(current);
 
 	panic("sysrq triggered crash\n");
 }

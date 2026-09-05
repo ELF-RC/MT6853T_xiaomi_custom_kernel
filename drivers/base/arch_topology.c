@@ -23,6 +23,10 @@
 #include <linux/sched/topology.h>
 #include <linux/sched/energy.h>
 #include <linux/cpuset.h>
+#include <trace/hooks/topology.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 DEFINE_PER_CPU(unsigned long, freq_scale) = SCHED_CAPACITY_SCALE;
 DEFINE_PER_CPU(unsigned long, max_cpu_freq);
@@ -39,6 +43,8 @@ void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
 	int i;
 
 	scale = (cur_freq << SCHED_CAPACITY_SHIFT) / max_freq;
+
+	trace_android_vh_arch_set_freq_scale(cpus, cur_freq, max_freq, &scale);
 
 	for_each_cpu(i, cpus) {
 		per_cpu(freq_scale, i) = scale;
@@ -60,6 +66,9 @@ void arch_set_max_freq_scale(struct cpumask *cpus,
 		return;
 
 	scale = (policy_max_freq << SCHED_CAPACITY_SHIFT) / max_freq;
+
+	trace_android_vh_arch_set_freq_scale(cpus, policy_max_freq, max_freq,
+					     &scale);
 
 	for_each_cpu(cpu, cpus)
 		per_cpu(max_freq_scale, cpu) = scale;
