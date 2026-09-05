@@ -16,6 +16,10 @@
 #include "rwsem.h"
 #ifdef CONFIG_MTK_TASK_TURBO
 #include <mt-plat/turbo_common.h>
+#include <trace/hooks/dtask.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 #endif
 
 /*

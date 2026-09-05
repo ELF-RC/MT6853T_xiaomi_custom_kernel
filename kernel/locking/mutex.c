@@ -28,6 +28,10 @@
 #include <linux/interrupt.h>
 #include <linux/debug_locks.h>
 #include <linux/osq_lock.h>
+#include <trace/hooks/dtask.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 #ifdef CONFIG_DEBUG_MUTEXES
 # include "mutex-debug.h"
@@ -799,6 +803,8 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 
 	waiter.task = current;
 
+	trace_android_vh_mutex_wait_start(lock);
+
 	if (__mutex_waiter_is_first(lock, &waiter))
 		__mutex_set_flag(lock, MUTEX_FLAG_WAITERS);
 
@@ -857,6 +863,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	spin_lock(&lock->wait_lock);
 acquired:
 	__set_current_state(TASK_RUNNING);
+	trace_android_vh_mutex_wait_finish(lock);
 
 	mutex_remove_waiter(lock, &waiter, current);
 	if (likely(list_empty(&lock->wait_list)))
