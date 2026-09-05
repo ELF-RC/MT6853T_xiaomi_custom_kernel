@@ -17,6 +17,10 @@
 #include <linux/sched/user.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/task.h>
+#include <trace/hooks/signal.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 #include <linux/sched/task_stack.h>
 #include <linux/sched/cputime.h>
 #include <linux/file.h>
@@ -1206,6 +1210,7 @@ __setup("print-fatal-signals=", setup_print_fatal_signals);
 int
 __group_send_sig_info(int sig, struct siginfo *info, struct task_struct *p)
 {
+	trace_android_vh_do_send_sig_info(sig, current, p);
 	return send_signal(sig, info, p, 1);
 }
 
