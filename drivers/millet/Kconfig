@@ -1,0 +1,8 @@
+config MILLET
+	bool "Xiaomi frozen framework"
+	help
+	  Mi frozen framework - provides netlink-based kernel-userspace
+	  communication for process freezing, binder monitoring, and
+	  package network activity tracking.
+
+	  If unsure, say N.
