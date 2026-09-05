@@ -20,6 +20,8 @@
 #include <net/inet6_hashtables.h>
 #include <linux/millet.h>
 
+extern int init_millet_subsystem(int type);
+
 #define MAX_REC_UID 64
 static atomic_t uid_rec[MAX_REC_UID];
 
@@ -267,5 +269,6 @@ void __init millet_pkg_setup(void)
 		pr_info("nf_register_hooks(millet hooks) success\n");
 		register_millet_hook(PKG_TYPE, pkg_recv_hook, pkg_sendmsg,
 			pkg_init_millet);
+		init_millet_subsystem(PKG_TYPE);
 	}
 }
