@@ -65,6 +65,11 @@
 
 #ifdef CONFIG_CC_STACKPROTECTOR
 #include <linux/stackprotector.h>
+#include <trace/hooks/minidump.h>
+#include <trace/hooks/fpsimd.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 unsigned long __stack_chk_guard __ro_after_init;
 EXPORT_SYMBOL(__stack_chk_guard);
 #endif
@@ -271,6 +276,7 @@ void __show_regs(struct pt_regs *regs)
 		top_reg = 29;
 	}
 
+	trace_android_vh_show_regs(regs);
 	show_regs_print_info(KERN_DEFAULT);
 	print_symbol("pc : %s\n", regs->pc);
 	print_symbol("lr : %s\n", lr);
@@ -503,6 +509,8 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	 * call.
 	 */
 	dsb(ish);
+
+	trace_android_vh_is_fpsimd_save(prev, next);
 
 	/* the actual thread switch */
 	last = cpu_switch_to(prev, next);
