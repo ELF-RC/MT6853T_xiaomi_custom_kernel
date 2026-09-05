@@ -16,6 +16,10 @@
 
 #include <linux/types.h>
 #include <linux/netfilter.h>
+#include <trace/hooks/net.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/skbuff.h>
@@ -1224,6 +1228,7 @@ __nf_conntrack_alloc(struct net *net,
 	 * this is inserted in any list.
 	 */
 	atomic_set(&ct->ct_general.use, 0);
+	trace_android_rvh_nf_conn_alloc(ct);
 	return ct;
 out:
 	atomic_dec(&net->ct.count);
@@ -1243,6 +1248,8 @@ EXPORT_SYMBOL_GPL(nf_conntrack_alloc);
 void nf_conntrack_free(struct nf_conn *ct)
 {
 	struct net *net = nf_ct_net(ct);
+
+	trace_android_rvh_nf_conn_free(ct);
 
 	/* A freed object has refcnt == 0, that's
 	 * the golden rule for SLAB_TYPESAFE_BY_RCU
