@@ -850,6 +850,8 @@ static int rt9465_register_irq(struct rt9465_info *info)
 	/* request gpio */
 	len = strlen(info->desc->chg_dev_name);
 	name = devm_kzalloc(info->dev, len + 10, GFP_KERNEL);
+	if (!name)
+		return -ENOMEM;
 	ret = snprintf(name, len + 10, "%s_irq_gpio", info->desc->chg_dev_name);
 	if (ret >= (len + 10))
 		chr_info("%s: name truncated\n", __func__);
@@ -1097,6 +1099,8 @@ static int rt9465_parse_dt(struct rt9465_info *info, struct device *dev)
 	/* request en gpio */
 	len = strlen(desc->chg_dev_name);
 	en_name = devm_kzalloc(info->dev, len + 9, GFP_KERNEL);
+	if (!en_name)
+		return -ENOMEM;
 	snprintf(en_name, len + 9, "%s_en_gpio", desc->chg_dev_name);
 	ret = devm_gpio_request_one(info->dev, info->en_gpio, GPIOF_DIR_OUT,
 		en_name);
