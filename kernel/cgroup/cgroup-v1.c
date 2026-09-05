@@ -17,6 +17,10 @@
 #include <trace/events/cgroup.h>
 #ifdef CONFIG_MTK_TASK_TURBO
 #include <mt-plat/turbo_common.h>
+#include <trace/hooks/cgroup.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 #endif
 
 /*
@@ -555,6 +559,7 @@ static ssize_t __cgroup1_procs_write(struct kernfs_open_file *of,
 		goto out_finish;
 
 	ret = cgroup_attach_task(cgrp, task, threadgroup);
+	trace_android_vh_cgroup_set_task(ret, task);
 #ifdef CONFIG_MTK_TASK_TURBO
 	if (!ret)
 		cgroup_set_turbo_task(task);
