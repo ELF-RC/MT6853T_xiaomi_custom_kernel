@@ -204,23 +204,6 @@ static inline void binder_user_error(const char *fmt, ...)
 #define to_binder_fd_array_object(hdr) \
 	container_of(hdr, struct binder_fd_array_object, hdr)
 
-enum binder_stat_types {
-	BINDER_STAT_PROC,
-	BINDER_STAT_THREAD,
-	BINDER_STAT_NODE,
-	BINDER_STAT_REF,
-	BINDER_STAT_DEATH,
-	BINDER_STAT_TRANSACTION,
-	BINDER_STAT_TRANSACTION_COMPLETE,
-	BINDER_STAT_COUNT
-};
-
-struct binder_stats {
-	atomic_t br[_IOC_NR(BR_FAILED_REPLY) + 1];
-	atomic_t bc[_IOC_NR(BC_REPLY_SG) + 1];
-	atomic_t obj_created[BINDER_STAT_COUNT];
-	atomic_t obj_deleted[BINDER_STAT_COUNT];
-};
 
 static struct binder_stats binder_stats;
 
@@ -286,25 +269,6 @@ struct binder_transaction_log_entry entry_t[MAX_ENG_TRANS_LOG_BUFF_LEN];
  *
  * There are separate work lists for proc, thread, and node (async).
  */
-struct binder_work {
-	struct list_head entry;
-
-	enum binder_work_type {
-		BINDER_WORK_TRANSACTION = 1,
-		BINDER_WORK_TRANSACTION_COMPLETE,
-		BINDER_WORK_RETURN_ERROR,
-		BINDER_WORK_NODE,
-		BINDER_WORK_DEAD_BINDER,
-		BINDER_WORK_DEAD_BINDER_AND_CLEAR,
-		BINDER_WORK_CLEAR_DEATH_NOTIFICATION,
-	} type;
-};
-
-struct binder_error {
-	struct binder_work work;
-	uint32_t cmd;
-};
-
 /**
  * struct binder_node - binder node bookkeeping
  * @debug_id:             unique ID for debugging
@@ -488,10 +452,6 @@ enum binder_deferred_state {
  * SCHED_FIFO
  * SCHED_RR
  */
-struct binder_priority {
-	unsigned int sched_policy;
-	int prio;
-};
 
 /**
  * struct binder_proc - binder process bookkeeping
@@ -553,151 +513,6 @@ struct binder_priority {
  *
  * Bookkeeping structure for binder processes
  */
-struct binder_proc {
-	struct hlist_node proc_node;
-	struct rb_root threads;
-	struct rb_root nodes;
-	struct rb_root refs_by_desc;
-	struct rb_root refs_by_node;
-	struct list_head waiting_threads;
-	int pid;
-	struct task_struct *tsk;
-	struct files_struct *files;
-	struct mutex files_lock;
-	const struct cred *cred;
-	struct hlist_node deferred_work_node;
-	int deferred_work;
-	bool is_dead;
-
-	struct list_head todo;
-	struct binder_stats stats;
-	struct list_head delivered_death;
-	int max_threads;
-	int requested_threads;
-	int requested_threads_started;
-	int tmp_ref;
-	struct binder_priority default_priority;
-	struct dentry *debugfs_entry;
-	struct binder_alloc alloc;
-	struct binder_context *context;
-	spinlock_t inner_lock;
-	spinlock_t outer_lock;
-	struct dentry *binderfs_entry;
-};
-
-enum {
-	BINDER_LOOPER_STATE_REGISTERED  = 0x01,
-	BINDER_LOOPER_STATE_ENTERED     = 0x02,
-	BINDER_LOOPER_STATE_EXITED      = 0x04,
-	BINDER_LOOPER_STATE_INVALID     = 0x08,
-	BINDER_LOOPER_STATE_WAITING     = 0x10,
-	BINDER_LOOPER_STATE_POLL        = 0x20,
-};
-
-/**
- * struct binder_thread - binder thread bookkeeping
- * @proc:                 binder process for this thread
- *                        (invariant after initialization)
- * @rb_node:              element for proc->threads rbtree
- *                        (protected by @proc->inner_lock)
- * @waiting_thread_node:  element for @proc->waiting_threads list
- *                        (protected by @proc->inner_lock)
- * @pid:                  PID for this thread
- *                        (invariant after initialization)
- * @looper:               bitmap of looping state
- *                        (only accessed by this thread)
- * @looper_needs_return:  looping thread needs to exit driver
- *                        (no lock needed)
- * @transaction_stack:    stack of in-progress transactions for this thread
- *                        (protected by @proc->inner_lock)
- * @todo:                 list of work to do for this thread
- *                        (protected by @proc->inner_lock)
- * @process_todo:         whether work in @todo should be processed
- *                        (protected by @proc->inner_lock)
- * @return_error:         transaction errors reported by this thread
- *                        (only accessed by this thread)
- * @reply_error:          transaction errors reported by target thread
- *                        (protected by @proc->inner_lock)
- * @wait:                 wait queue for thread work
- * @stats:                per-thread statistics
- *                        (atomics, no lock needed)
- * @tmp_ref:              temporary reference to indicate thread is in use
- *                        (atomic since @proc->inner_lock cannot
- *                        always be acquired)
- * @is_dead:              thread is dead and awaiting free
- *                        when outstanding transactions are cleaned up
- *                        (protected by @proc->inner_lock)
- * @task:                 struct task_struct for this thread
- *
- * Bookkeeping structure for binder threads.
- */
-struct binder_thread {
-	struct binder_proc *proc;
-	struct rb_node rb_node;
-	struct list_head waiting_thread_node;
-	int pid;
-	int looper;              /* only modified by this thread */
-	bool looper_need_return; /* can be written by other thread */
-	struct binder_transaction *transaction_stack;
-	struct list_head todo;
-	bool process_todo;
-	struct binder_error return_error;
-	struct binder_error reply_error;
-	wait_queue_head_t wait;
-	struct binder_stats stats;
-	atomic_t tmp_ref;
-	bool is_dead;
-	struct task_struct *task;
-};
-
-struct binder_transaction {
-	int debug_id;
-	struct binder_work work;
-	struct binder_thread *from;
-	struct binder_transaction *from_parent;
-	struct binder_proc *to_proc;
-	struct binder_thread *to_thread;
-	struct binder_transaction *to_parent;
-	unsigned need_reply:1;
-	/* unsigned is_dead:1; */	/* not used at the moment */
-
-	struct binder_buffer *buffer;
-	unsigned int	code;
-	unsigned int	flags;
-	struct binder_priority	priority;
-	struct binder_priority	saved_priority;
-	bool    set_priority_called;
-	kuid_t	sender_euid;
-	binder_uintptr_t security_ctx;
-	/**
-	 * @lock:  protects @from, @to_proc, and @to_thread
-	 *
-	 * @from, @to_proc, and @to_thread can be set to NULL
-	 * during thread teardown
-	 */
-	spinlock_t lock;
-#ifdef BINDER_WATCHDOG
-	enum wait_on_reason wait_on;
-	enum wait_on_reason bark_on;
-	struct rb_node rb_node;         /* by bark_time */
-	struct timespec bark_time;
-	struct timespec exe_timestamp;
-	char service[MAX_SERVICE_NAME_LEN];
-	pid_t fproc;
-	pid_t fthrd;
-	pid_t tproc;
-	pid_t tthrd;
-	unsigned int log_idx;
-#endif
-#ifdef BINDER_USER_TRACKING
-	struct timespec timestamp;
-	struct timeval tv;
-#endif
-#ifdef CONFIG_MTK_TASK_TURBO
-	struct task_struct *inherit_task;
-#endif
-
-};
 
 #ifdef BINDER_USER_TRACKING
 #ifndef BINDER_WATCHDOG
@@ -1822,19 +1637,22 @@ static void binder_do_set_priority(struct task_struct *task,
 		set_user_nice(task, priority);
 }
 
-static void binder_set_priority(struct task_struct *task,
+static void binder_set_priority(struct task_struct *t,
+			struct task_struct *task,
 			struct binder_priority desired)
 {
 	bool skip = false;
-	trace_android_vh_binder_set_priority(NULL, task, &skip);
-	if (!skip)
-		binder_do_set_priority(task, desired, /* verify = */ true);
+	trace_android_vh_binder_set_priority(t, task, &skip);
+	if (skip)
+		return;
+	binder_do_set_priority(task, desired, /* verify = */ true);
 }
 
-static void binder_restore_priority(struct task_struct *task,
+static void binder_restore_priority(struct binder_transaction *t,
+				    struct task_struct *task,
 				    struct binder_priority desired)
 {
-	trace_android_vh_binder_restore_priority(NULL, task);
+	trace_android_vh_binder_restore_priority(t, task);
 	binder_do_set_priority(task, desired, /* verify = */ false);
 }
 
@@ -1870,7 +1688,7 @@ static void binder_transaction_priority(struct task_struct *task,
 		desired_prio = node_prio;
 	}
 
-	binder_set_priority(task, desired_prio);
+	binder_set_priority(t, task, desired_prio);
 }
 
 static struct binder_node *binder_get_node_ilocked(struct binder_proc *proc,
@@ -3551,6 +3369,9 @@ static bool binder_proc_transaction(struct binder_transaction *t,
 		binder_wakeup_thread_ilocked(proc, thread, !oneway /* sync */);
 
 	binder_inner_proc_unlock(proc);
+	trace_android_vh_binder_proc_transaction(current, proc->tsk,
+		thread ? thread->task : NULL, node->debug_id, t->code,
+		pending_async);
 	binder_node_unlock(node);
 
 	return true;
@@ -3717,6 +3538,8 @@ static void binder_transaction(struct binder_proc *proc,
 		target_proc = target_thread->proc;
 		target_proc->tmp_ref++;
 		binder_inner_proc_unlock(target_thread->proc);
+		trace_android_vh_binder_transaction(target_proc, proc, thread,
+						    tr, true);
 #ifdef BINDER_WATCHDOG
 		e->service[0] = '\0';
 #endif
@@ -3772,6 +3595,8 @@ static void binder_transaction(struct binder_proc *proc,
 			goto err_dead_binder;
 		}
 		e->to_node = target_node->debug_id;
+		trace_android_vh_binder_transaction(target_proc, proc, thread,
+						    tr, false);
 #ifdef BINDER_WATCHDOG
 		strncpy(e->service, target_node->name, MAX_SERVICE_NAME_LEN);
 #endif
@@ -3846,6 +3671,7 @@ static void binder_transaction(struct binder_proc *proc,
 #endif
 	binder_stats_created(BINDER_STAT_TRANSACTION);
 	spin_lock_init(&t->lock);
+	trace_android_vh_binder_transaction_init(t);
 
 	tcomplete = kzalloc(sizeof(*tcomplete), GFP_KERNEL);
 	if (tcomplete == NULL) {
@@ -4234,7 +4060,9 @@ static void binder_transaction(struct binder_proc *proc,
 			in_reply_to->inherit_task = NULL;
 		}
 #endif
-		binder_restore_priority(current, in_reply_to->saved_priority);
+		binder_restore_priority(in_reply_to, current,
+					in_reply_to->saved_priority);
+		trace_android_vh_binder_restore_priority(in_reply_to, current);
 		binder_free_transaction(in_reply_to);
 	} else if (!(t->flags & TF_ONE_WAY)) {
 		BUG_ON(t->buffer->async_transaction != 0);
@@ -4360,7 +4188,8 @@ err_invalid_target_handle:
 			in_reply_to->inherit_task = NULL;
 		}
 #endif
-		binder_restore_priority(current, in_reply_to->saved_priority);
+		binder_restore_priority(in_reply_to, current,
+					in_reply_to->saved_priority);
 		thread->return_error.cmd = BR_TRANSACTION_COMPLETE;
 		binder_enqueue_thread_work(thread, &thread->return_error.work);
 		binder_send_failed_reply(in_reply_to, return_error);
@@ -4895,6 +4724,8 @@ static int binder_wait_for_work(struct binder_thread *thread,
 		if (do_proc_work)
 			list_add(&thread->waiting_thread_node,
 				 &proc->waiting_threads);
+		trace_android_vh_binder_wait_for_work(do_proc_work, thread,
+						      proc);
 		binder_inner_proc_unlock(proc);
 		schedule();
 		binder_inner_proc_lock(proc);
@@ -4950,7 +4781,8 @@ retry:
 #ifdef CONFIG_MTK_TASK_TURBO
 		binder_stop_turbo_inherit(current);
 #endif
-		binder_restore_priority(current, proc->default_priority);
+		binder_restore_priority(NULL, current,
+					proc->default_priority);
 	}
 
 	if (non_block) {
@@ -6006,6 +5838,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
 	mutex_lock(&binder_procs_lock);
 	hlist_add_head(&proc->proc_node, &binder_procs);
 	mutex_unlock(&binder_procs_lock);
+	trace_android_vh_binder_preset(&binder_procs, &binder_procs_lock);
 
 	if (binder_debugfs_dir_entry_proc) {
 		char strbuf[11];
