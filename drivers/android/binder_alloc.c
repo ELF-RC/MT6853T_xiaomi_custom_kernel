@@ -37,6 +37,7 @@
 #endif
 #include "binder_alloc.h"
 #include "binder_trace.h"
+#include <trace/hooks/binder.h>
 
 struct list_lru binder_alloc_lru;
 
@@ -579,6 +580,8 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 			debug_low_async_space_locked(alloc, pid);
 		}
 	}
+	trace_android_vh_binder_alloc_new_buf_locked(size, alloc, is_async);
+
 	return buffer;
 
 err_alloc_buf_struct_failed:
