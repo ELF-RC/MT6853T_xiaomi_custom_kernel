@@ -1185,6 +1185,8 @@ void mtk_crtc_prepare_dual_pipe(struct mtk_drm_crtc *mtk_crtc)
 			struct mtk_ddp_comp *comp;
 
 			comp = kzalloc(sizeof(*comp), GFP_KERNEL);
+			if (!comp)
+				continue;
 			comp->id = comp_id;
 			mtk_crtc->dual_pipe_ddp_ctx.ddp_comp[i][j] = comp;
 			continue;
@@ -7360,6 +7362,8 @@ int mtk_drm_crtc_create(struct drm_device *drm_dev,
 			struct mtk_ddp_comp *comp;
 
 			comp = kzalloc(sizeof(*comp), GFP_KERNEL);
+			if (!comp)
+				return -ENOMEM;
 			comp->id = comp_id;
 			mtk_crtc->ddp_ctx[p_mode].ddp_comp[i][j] = comp;
 			continue;
@@ -7414,6 +7418,8 @@ int mtk_drm_crtc_create(struct drm_device *drm_dev,
 			struct mtk_ddp_comp *comp;
 
 			comp = kzalloc(sizeof(*comp), GFP_KERNEL);
+			if (!comp)
+				return -ENOMEM;
 			comp->id = comp_id;
 			mtk_crtc->ddp_ctx[p_mode].wb_comp[i] = comp;
 			continue;

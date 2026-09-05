@@ -1559,6 +1559,8 @@ static int rt9759_init_irq(struct rt9759_chip *chip)
 	/* Request threaded IRQ */
 	len = strlen(chip->desc->chg_name);
 	name = devm_kzalloc(chip->dev, len + 5, GFP_KERNEL);
+	if (!name)
+		return -ENOMEM;
 	snprintf(name, len + 5, "%s_irq", chip->desc->chg_name);
 	ret = devm_request_threaded_irq(chip->dev, chip->irq, NULL,
 		rt9759_irq_handler, IRQF_TRIGGER_FALLING | IRQF_ONESHOT, name,
