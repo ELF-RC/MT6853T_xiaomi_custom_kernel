@@ -1867,6 +1867,8 @@ static kal_uint32 get_imgsensor_id(UINT32 *sensor_id)
 	kal_uint8 retry_cnt = retry_total;
 #ifdef SLT_DEVINFO_CMM
 	s_DEVINFO_ccm = kmalloc(sizeof(struct devinfo_struct), GFP_KERNEL);
+	if (!s_DEVINFO_ccm)
+		return;
 	s_DEVINFO_ccm->device_type = "CCM";
 
 	/* can change if got module id */
