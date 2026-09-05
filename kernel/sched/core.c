@@ -47,6 +47,9 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/sched.h>
+#include <trace/hooks/dtask.h>
 #include "walt.h"
 #include "frame_boost.h"
 #include "mtk_mcdi_api.h"
@@ -2690,8 +2693,12 @@ static int select_fallback_rq(int cpu, struct task_struct *p, bool allow_iso)
 	int nid = cpu_to_node(cpu);
 	const struct cpumask *nodemask = NULL;
 	enum { cpuset, possible, fail, bug } state = cpuset;
-	int dest_cpu;
+	int dest_cpu = -1;
 	int isolated_candidate = -1;
+
+	trace_android_rvh_select_fallback_rq(cpu, p, &dest_cpu);
+	if (dest_cpu >= 0)
+		return dest_cpu;
 
 	/*
 	 * If the node that the CPU is on has been offlined, cpu_to_node()
@@ -3644,6 +3651,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 * Make sure we do not leak PI boosting priority to the child.
 	 */
 	p->prio = current->normal_prio;
+	trace_android_rvh_prepare_prio_fork(p);
 #ifdef CONFIG_MTK_TASK_TURBO
 	if (unlikely(is_turbo_task(current)))
 		set_user_nice(p, current->nice_backup);
@@ -3684,6 +3692,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	}
 
 	init_entity_runnable_average(&p->se);
+	trace_android_rvh_finish_prio_fork(p);
 
 #ifdef CONFIG_MTK_SCHED_BOOST
 	p->cpu_prefer = current->cpu_prefer;
@@ -4349,6 +4358,8 @@ void scheduler_tick(void)
 	psi_task_tick(rq);
 
 	rq_unlock(rq, &rf);
+
+	trace_android_vh_scheduler_tick(rq);
 
 	perf_event_task_tick();
 
@@ -5037,6 +5048,7 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 	}
 	__task_rq_unlock(rq, &rf);
 #endif
+	trace_android_rvh_rtmutex_prepare_setprio(p, pi_task);
 	/* XXX used to be waiter->prio, not waiter->task->prio */
 	prio = __rt_effective_prio(pi_task, p->normal_prio);
 
@@ -5163,6 +5175,11 @@ void set_user_nice(struct task_struct *p, long nice)
 	int old_prio, delta;
 	struct rq_flags rf;
 	struct rq *rq;
+	bool allowed = true;
+
+	trace_android_rvh_set_user_nice(p, &nice, &allowed);
+	if (!allowed)
+		return;
 
 #ifdef CONFIG_MTK_TASK_TURBO
 	if ((nice < MIN_NICE || nice > MAX_NICE) && !task_turbo_nice(nice))
@@ -5656,6 +5673,8 @@ change:
 	/* Run balance callbacks after we've adjusted the PI chain: */
 	balance_callback(rq);
 	preempt_enable();
+
+	trace_android_rvh_setscheduler(p);
 
 	return 0;
 }
@@ -6638,6 +6657,7 @@ void sched_show_task(struct task_struct *p)
 		(unsigned long)task_thread_info(p)->flags);
 
 	print_worker_info(KERN_INFO, p);
+	trace_android_vh_sched_show_task(p);
 	show_stack(p, NULL);
 	put_task_stack(p);
 }

@@ -12,6 +12,9 @@
 
 #include <trace/events/sched.h>
 #include <trace/hooks/sched.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 #include "walt.h"
 
@@ -1818,6 +1821,15 @@ static int find_lowest_rq(struct task_struct *task)
 
 	if (!cpupri_find(&task_rq(task)->rd->cpupri, task, lowest_mask))
 		return -1; /* No targets found */
+
+	{
+		int lowest_cpu = -1;
+
+		trace_android_rvh_find_lowest_rq(task, lowest_mask,
+						&lowest_cpu);
+		if (lowest_cpu >= 0)
+			return lowest_cpu;
+	}
 
 #ifdef CONFIG_MTK_SCHED_INTEROP
 	interop_cpu = mt_sched_interop_rt(cpu, lowest_mask);
