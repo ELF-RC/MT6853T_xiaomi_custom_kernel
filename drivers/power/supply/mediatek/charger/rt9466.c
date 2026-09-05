@@ -1386,12 +1386,16 @@ static int rt9466_irq_register(struct rt9466_info *info)
 	/* request gpio */
 	len = strlen(info->desc->chg_dev_name);
 	name = devm_kzalloc(info->dev, len + 10, GFP_KERNEL);
+	if (!name)
+		return -ENOMEM;
 	snprintf(name,  len + 10, "%s_irq_gpio", info->desc->chg_dev_name);
 
 	rt_info("%s: irq = %d\n", __func__, info->irq);
 
 	/* Request threaded IRQ */
 	name = devm_kzalloc(info->dev, len + 5, GFP_KERNEL);
+	if (!name)
+		return -ENOMEM;
 	snprintf(name, len + 5, "%s_irq", info->desc->chg_dev_name);
 	ret = devm_request_threaded_irq(info->dev, info->irq, NULL,
 		rt9466_irq_handler, IRQF_TRIGGER_FALLING | IRQF_ONESHOT, name,

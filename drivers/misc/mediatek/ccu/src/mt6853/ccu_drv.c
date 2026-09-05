@@ -1522,6 +1522,8 @@ static int __init CCU_INIT(void)
 	/*struct device_node *node = NULL;*/
 
 	g_ccu_device = kzalloc(sizeof(struct ccu_device_s), GFP_KERNEL);
+	if (!g_ccu_device)
+		return -ENOMEM;
 	/*g_ccu_device = dma_cache_coherent();*/
 
 	INIT_LIST_HEAD(&g_ccu_device->user_list);
