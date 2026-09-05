@@ -9,6 +9,8 @@
 #include <linux/types.h>
 #include <linux/millet.h>
 
+extern int init_millet_subsystem(int type);
+
 static int hs_sendmsg(struct task_struct *tsk,
 		struct millet_data *data, struct millet_sock *sk)
 {
@@ -46,4 +48,5 @@ void __init millet_hs_setup(void)
 	pr_info("hs_register_hooks(millet hooks) success\n");
 	register_millet_hook(HANDSHK_TYPE, hs_recv_hook, hs_sendmsg,
 		hs_init_millet);
+	init_millet_subsystem(HANDSHK_TYPE);
 }
