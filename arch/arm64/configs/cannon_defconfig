@@ -4777,6 +4777,7 @@ CONFIG_ARM_DSU_PMU=y
 # Android
 #
 CONFIG_ANDROID=y
+CONFIG_ANDROID_VENDOR_HOOKS=y
 CONFIG_ANDROID_BINDER_IPC=y
 CONFIG_ANDROID_BINDERFS=y
 CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"
@@ -5554,10 +5555,8 @@ CONFIG_SBITMAP=y
 CONFIG_USB_PD_REV30=y
 CONFIG_USB_PD_REV30_PPS_SINK=y
 CONFIG_MTK_HANDLE_PPS_TIMEOUT=y
-# development: no millet / KernelSU sources in tree
-# CONFIG_MILLET is not set
+# Millet frozen framework
+CONFIG_MILLET=y
 #DTB
 CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
 CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6853"
-# CONFIG_KSU is not set
-# SELinux forced permissive remains in security/selinux/* (branch leniency)
