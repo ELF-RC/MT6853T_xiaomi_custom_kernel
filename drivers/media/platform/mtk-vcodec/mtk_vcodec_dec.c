@@ -2777,7 +2777,11 @@ static int mtk_vdec_s_ctrl(struct v4l2_ctrl *ctrl)
 		mtk_vcodec_set_log(ctx, ctrl->p_new.p_char);
 		break;
 	default:
-		mtk_v4l2_err("ctrl-id=%x not support!", ctrl->id);
+		/* Newer userspace (Android 15+/codec2) probes controls this
+		 * 4.14 driver does not know. -EINVAL is the correct reply;
+		 * keep the trace at debug level to avoid log flooding.
+		 */
+		mtk_v4l2_debug(1, "ctrl-id=%x not support!", ctrl->id);
 		return -EINVAL;
 	}
 
