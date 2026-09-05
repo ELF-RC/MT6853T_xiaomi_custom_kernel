@@ -80,26 +80,6 @@ static void dump_recv_msg(struct millet_userconf *msg)
 	pr_info("dest_port: 0x%lx\n", msg->dst_port);
 }
 
-int millet_can_attach(struct cgroup_taskset *tset)
-{
-	const struct cred *cred = current_cred(), *tcred;
-	struct task_struct *task;
-	struct cgroup_subsys_state *css;
-
-	cgroup_taskset_for_each(task, css, tset) {
-		tcred = __task_cred(task);
-
-		if ((current != task) &&
-		    !(cred->euid.val == 1000 ||
-		      capable(CAP_SYS_ADMIN))) {
-			pr_err("Permission problem\n");
-			return 1;
-		}
-	}
-
-	return 0;
-}
-
 int millet_sendto_user(struct task_struct *tsk,
 		struct millet_data *data, struct millet_sock *sk)
 {
@@ -210,7 +190,8 @@ static void recv_handler(struct sk_buff *skb)
 	}
 
 	uid = (*NETLINK_CREDS(skb)).uid.val;
-	if (uid > 1000) {
+	/* Only root and AID_SYSTEM (1000); reject other system-like UIDs. */
+	if (uid != 0 && uid != 1000) {
 		pr_err("uid: %d, permission denied\n", uid);
 		return;
 	}
@@ -425,6 +406,24 @@ int register_millet_hook(int type, recv_hook recv_from,
 
 	return RET_OK;
 }
+
+int init_millet_subsystem(int type)
+{
+	if (!TYPE_VALID(type)) {
+		pr_err("%s: type is invalid! %d\n",
+				__func__, type);
+		return RET_ERR;
+	}
+
+	atomic_set(&millet_sk.mod[type].port, 0);
+	spin_lock_init(&millet_sk.mod[type].lock);
+	if (millet_sk.mod[type].init)
+		millet_sk.mod[type].init(&millet_sk);
+
+	strlcpy(millet_sk.mod[type].name, NAME_ARRAY[type], NAME_MAXLEN);
+	return RET_OK;
+}
+EXPORT_SYMBOL_GPL(init_millet_subsystem);
 
 int unregister_millet_hook(int type)
 {
