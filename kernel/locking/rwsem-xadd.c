@@ -22,6 +22,10 @@
 #include "rwsem.h"
 #ifdef CONFIG_MTK_TASK_TURBO
 #include <mt-plat/turbo_common.h>
+#include <trace/hooks/dtask.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 #endif
 
 /*
@@ -292,6 +296,7 @@ __rwsem_down_read_failed_common(struct rw_semaphore *sem, int state)
 	wake_up_q(&wake_q);
 
 	/* wait to be given the lock */
+	trace_android_vh_rwsem_read_wait_start(sem);
 	while (true) {
 		set_current_state(state);
 		if (!waiter.task)
@@ -307,6 +312,7 @@ __rwsem_down_read_failed_common(struct rw_semaphore *sem, int state)
 	}
 
 	__set_current_state(TASK_RUNNING);
+	trace_android_vh_rwsem_read_wait_finish(sem);
 	return sem;
 out_nolock:
 	list_del(&waiter.list);
@@ -314,6 +320,7 @@ out_nolock:
 		atomic_long_add(-RWSEM_WAITING_BIAS, &sem->count);
 	raw_spin_unlock_irq(&sem->wait_lock);
 	__set_current_state(TASK_RUNNING);
+	trace_android_vh_rwsem_read_wait_finish(sem);
 	return ERR_PTR(-EINTR);
 }
 
@@ -596,6 +603,7 @@ __rwsem_down_write_failed_common(struct rw_semaphore *sem, int state)
 	rwsem_start_turbo_inherit(sem);
 #endif
 	/* wait until we successfully acquire the lock */
+	trace_android_vh_rwsem_write_wait_start(sem);
 	set_current_state(state);
 	while (true) {
 		if (rwsem_try_write_lock(count, sem))
@@ -616,11 +624,13 @@ __rwsem_down_write_failed_common(struct rw_semaphore *sem, int state)
 	__set_current_state(TASK_RUNNING);
 	list_del(&waiter.list);
 	raw_spin_unlock_irq(&sem->wait_lock);
+	trace_android_vh_rwsem_write_wait_finish(sem);
 
 	return ret;
 
 out_nolock:
 	__set_current_state(TASK_RUNNING);
+	trace_android_vh_rwsem_write_wait_finish(sem);
 	raw_spin_lock_irq(&sem->wait_lock);
 	list_del(&waiter.list);
 	if (list_empty(&sem->wait_list))
