@@ -270,6 +270,10 @@ struct futex_hash_bucket {
 
 #ifdef CONFIG_MTK_TASK_TURBO
 #include <mt-plat/task_turbo_futex.h>
+#include <trace/hooks/futex.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 #endif
 
 /*
@@ -2376,7 +2380,13 @@ static inline void __queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
 #ifdef CONFIG_MTK_TASK_TURBO
 	futex_plist_add(q, hb);
 #else
-	plist_add(&q->list, &hb->chain);
+	{
+		bool already_on_hb = false;
+		trace_android_vh_alter_futex_plist_add(&q->list, &hb->chain,
+						       &already_on_hb);
+		if (!already_on_hb)
+			plist_add(&q->list, &hb->chain);
+	}
 #endif
 	q->task = current;
 }

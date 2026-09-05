@@ -58,6 +58,8 @@
 #include <trace/events/initcall.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/debug.h>
 
 #include "console_cmdline.h"
 #include "braille.h"
@@ -2175,6 +2177,8 @@ asmlinkage int vprintk_emit(int facility, int level,
 	logbuf_lock_irqsave(flags);
 	printed_len = vprintk_store(facility, level, dict, dictlen, fmt, args);
 	logbuf_unlock_irqrestore(flags);
+
+	trace_android_vh_printk_store(facility, level);
 
 	/* If called from the scheduler, we can not call up(). */
 	if (!in_sched && cpu_online(raw_smp_processor_id())) {

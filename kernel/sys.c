@@ -74,6 +74,7 @@
 #include <asm/unistd.h>
 #ifdef CONFIG_MTK_TASK_TURBO
 #include <mt-plat/turbo_common.h>
+#include <trace/hooks/sys.h>
 #endif
 
 #ifndef SET_UNALIGN_CTL
@@ -2603,6 +2604,7 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		error = -EINVAL;
 		break;
 	}
+	trace_android_vh_syscall_prctl_finished(option, me);
 	return error;
 }
 
