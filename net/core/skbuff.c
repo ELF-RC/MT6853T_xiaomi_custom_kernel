@@ -76,6 +76,10 @@
 #include <linux/highmem.h>
 #include <linux/capability.h>
 #include <linux/user_namespace.h>
+#include <trace/hooks/net.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 struct kmem_cache *skbuff_head_cache __read_mostly;
 static struct kmem_cache *skbuff_fclone_cache __read_mostly;
@@ -702,6 +706,7 @@ void kfree_skb(struct sk_buff *skb)
 		return;
 
 	trace_kfree_skb(skb, __builtin_return_address(0));
+	trace_android_vh_kfree_skb(skb);
 	__kfree_skb(skb);
 }
 EXPORT_SYMBOL(kfree_skb);
