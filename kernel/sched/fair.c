@@ -36,6 +36,9 @@
 
 #include <trace/events/sched.h>
 #include <trace/hooks/sched.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 #include "sched.h"
 #include "tune.h"
@@ -6604,7 +6607,6 @@ static void dump_eenv_debug(struct energy_env *eenv)
 	char cpu_utils[(NR_CPUS*12)+10]="cpu_util: ";
 	char cpulist[64];
 
-#ifdef CONFIG_SCHED_DEBUG
 	trace_printk("eenv scenario: task=%p %s task_util=%lu prev_cpu=%d",
 			eenv->p, eenv->p->comm, eenv->util_delta, eenv->cpu[EAS_CPU_PRV].cpu_id);
 
@@ -6647,7 +6649,6 @@ static void dump_eenv_debug(struct energy_env *eenv)
 		trace_printk("---");
 	}
 	trace_printk("----- done");
-#endif /* CONFIG_SCHED_DEBUG */
 	return;
 }
 #else
@@ -6742,7 +6743,7 @@ static inline int select_energy_cpu_idx(struct energy_env *eenv)
 	if (sched_feat(FBT_STRICT_ORDER))
 		last_cpu_idx = EAS_CPU_BKP;
 
-	for (cpu_idx = EAS_CPU_NXT; cpu_idx <= last_cpu_idx; cpu_idx++) {
+	for(cpu_idx = EAS_CPU_NXT; cpu_idx <= last_cpu_idx; cpu_idx++) {
 		if (eenv->cpu[cpu_idx].cpu_id < 0)
 			continue;
 		eenv->cpu[cpu_idx].nrg_delta =
@@ -6976,10 +6977,15 @@ boosted_cpu_util(int cpu)
 {
 	unsigned long util = cpu_util_freq(cpu);
 	long margin = schedtune_cpu_margin(util, cpu);
+	unsigned long fb_util = 0;
+
+#ifdef CONFIG_SCHED_FRAME_BOOST
+	fb_util = frame_boost_cpu_util(cpu);
+#endif
 
 	trace_sched_boost_cpu(cpu, util, margin);
 
-	return util + margin;
+	return util + margin + fb_util;
 }
 
 static inline unsigned long
@@ -8134,7 +8140,7 @@ static inline void reset_eenv(struct energy_env *eenv)
 #ifdef DEBUG_EENV_DECISIONS
 	memset(debug, 0, eenv_debug_size());
 	eenv->debug = debug;
-	for (cpu_idx = 0; cpu_idx < eenv->eenv_cpu_count; cpu_idx++)
+	for(cpu_idx = 0; cpu_idx < eenv->eenv_cpu_count; cpu_idx++)
 		eenv->cpu[cpu_idx].debug = eenv_debug_percpu_debug_env_ptr(debug, cpu_idx);
 #endif
 }
@@ -8208,7 +8214,7 @@ static int find_energy_efficient_cpu(struct sched_domain *sd,
 	if (!boosted_task_util(p))
 		return -1;
 
-	if (!use_fbt) {
+	if(!use_fbt) {
 		/*
 		 * using this function outside wakeup balance will not supply
 		 * an sd ptr. Instead, fetch the highest level with energy data.
@@ -8246,7 +8252,7 @@ static int find_energy_efficient_cpu(struct sched_domain *sd,
 		/*
 		 * give compiler a hint that if sched_features
 		 * cannot be changed, it is safe to optimise out
-		 * all if (prefer_idle) blocks.
+		 * all if(prefer_idle) blocks.
 		 */
 		prefer_idle = sched_feat(EAS_PREFER_IDLE) ?
 				(schedtune_prefer_idle(p) > 0) : 0;
@@ -8364,7 +8370,7 @@ static inline int wake_energy(struct task_struct *p, int prev_cpu,
 	if (unlikely(!sched_feat(FIND_BEST_TARGET) && !task_util_est(p)))
 		return false;
 
-	if (!sched_feat(EAS_PREFER_IDLE)){
+	if(!sched_feat(EAS_PREFER_IDLE)){
 		/*
 		 * Force prefer-idle tasks into the slow path, this may not happen
 		 * if none of the sd flags matched.
@@ -9219,8 +9225,13 @@ static
 int can_migrate_task(struct task_struct *p, struct lb_env *env)
 {
 	int tsk_cache_hot;
+	int can_migrate = 1;
 
 	lockdep_assert_held(&env->src_rq->lock);
+
+	trace_android_rvh_can_migrate_task(p, env->dst_cpu, &can_migrate);
+	if (!can_migrate)
+		return 0;
 
 	/*
 	 * We do not migrate tasks that are:
@@ -10684,6 +10695,14 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 	}
 
 
+	{
+		int out_balance = 1;
+
+		trace_android_rvh_find_busiest_group(sds.busiest, env->dst_rq,
+					&out_balance);
+		if (!out_balance)
+			goto out_balanced;
+	}
 	if (energy_aware() && !sd_overutilized(env->sd) && !intra)
 		goto out_balanced;
 
