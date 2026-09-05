@@ -36,6 +36,9 @@
 
 #include <trace/events/sched.h>
 #include <trace/hooks/sched.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 #include "sched.h"
 #include "tune.h"
@@ -9224,8 +9227,13 @@ static
 int can_migrate_task(struct task_struct *p, struct lb_env *env)
 {
 	int tsk_cache_hot;
+	int can_migrate = 1;
 
 	lockdep_assert_held(&env->src_rq->lock);
+
+	trace_android_rvh_can_migrate_task(p, env->dst_cpu, &can_migrate);
+	if (!can_migrate)
+		return 0;
 
 	/*
 	 * We do not migrate tasks that are:
@@ -10689,6 +10697,14 @@ static struct sched_group *find_busiest_group(struct lb_env *env)
 	}
 
 
+	{
+		int out_balance = 1;
+
+		trace_android_rvh_find_busiest_group(sds.busiest, env->dst_rq,
+					&out_balance);
+		if (!out_balance)
+			goto out_balanced;
+	}
 	if (energy_aware() && !sd_overutilized(env->sd) && !intra)
 		goto out_balanced;
 
