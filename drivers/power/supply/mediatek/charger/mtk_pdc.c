@@ -107,9 +107,13 @@ done:
 	/* Restore original input current limit */
 	charger_set_input_current(old_aicr);
 
-	chr_err("%s: r_cable=%d mOhm vchr1=%d vchr2=%d threshold=%d good=%d\n",
-		__func__, cable_imp, vchr1, vchr2,
-		pd->data.cable_imp_threshold, pd->cable_imp_good);
+	if (pd->cable_imp_good)
+		chr_info("%s: r_cable=%d mOhm vchr1=%d vchr2=%d threshold=%d\n",
+			__func__, cable_imp, vchr1, vchr2,
+			pd->data.cable_imp_threshold);
+	else
+		chr_err("%s: BAD cable r_cable=%d mOhm threshold=%d\n",
+			__func__, cable_imp, pd->data.cable_imp_threshold);
 }
 
 void pdc_init_table(void)
@@ -313,7 +317,7 @@ int pdc_get_idx(int selected_idx,
 		pdc_get_idx(idx, &pd->pd_boost_idx, &pd->pd_buck_idx);
 	}
 
-	chr_err("[%s]idx:%d:%d:%d:%d vbus:%d cur:%d ret:%d ir_drop:%d r_cable:%d\n",
+	pr_info_ratelimited("[%s]idx:%d:%d:%d:%d vbus:%d cur:%d ret:%d ir_drop:%d r_cable:%d\n",
 		__func__,
 		pd->pd_idx, idx, pd->pd_boost_idx, pd->pd_buck_idx,
 		pd->cap.max_mv[idx], pd->cap.ma[idx], ret,
@@ -468,15 +472,9 @@ int pdc_get_setting(int *newvbus, int *newcur,
 		}
 	}
 
-	chr_err("[%s]watt:%d,%d,%d up:%d,%d vbus:%d ibus:%d, mivr:%d\n",
-		__func__,
-		pd_max_watt, now_max_watt, pd_min_watt,
-		boost, buck,
-		vbus, ibus, chg1_mivr);
-
-	chr_err("[%s]vbus:%d:%d:%d current:%d idx:%d default_idx:%d\n",
-		__func__, pd->vbus_h, pd->vbus_l, *newvbus,
-		*newcur, *newidx, selected_idx);
+	pr_info_ratelimited("[%s]watt:%d,%d,%d vbus:%d:%d:%d cur:%d idx:%d\n",
+		__func__, pd_max_watt, now_max_watt, pd_min_watt,
+		pd->vbus_h, pd->vbus_l, *newvbus, *newcur, *newidx);
 
 	return 0;
 
