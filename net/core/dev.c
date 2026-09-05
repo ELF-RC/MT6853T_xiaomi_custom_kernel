@@ -149,6 +149,10 @@
 #include <net/udp_tunnel.h>
 
 #include "net-sysfs.h"
+#include <trace/hooks/net.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 /* Instead of increasing this, you should create a hash table. */
 #define MAX_GRO_SKBS 8
@@ -384,6 +388,12 @@ static inline void netdev_set_addr_lockdep_class(struct net_device *dev)
 
 static inline struct list_head *ptype_head(const struct packet_type *pt)
 {
+	struct list_head *vendor_pt = NULL;
+
+	trace_android_vh_ptype_head(pt, &vendor_pt);
+	if (vendor_pt)
+		return vendor_pt;
+
 	if (pt->type == htons(ETH_P_ALL))
 		return pt->dev ? &pt->dev->ptype_all : &ptype_all;
 	else

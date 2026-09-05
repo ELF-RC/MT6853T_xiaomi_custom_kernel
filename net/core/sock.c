@@ -143,6 +143,10 @@
 
 #include <net/tcp.h>
 #include <net/busy_poll.h>
+#include <trace/hooks/net.h>
+/* hook headers leak TRACE_INCLUDE_PATH; reset so later event
+ * headers resolve their own include path */
+#undef TRACE_INCLUDE_PATH
 
 static DEFINE_MUTEX(proto_list_mutex);
 static LIST_HEAD(proto_list);
@@ -1635,6 +1639,7 @@ struct sock *sk_alloc(struct net *net, int family, gfp_t priority,
 
 	sk = sk_prot_alloc(prot, priority | __GFP_ZERO, family);
 	if (sk) {
+		trace_android_rvh_sk_alloc(sk);
 		sk->sk_family = family;
 		/*
 		 * See comment in struct sock definition to understand
@@ -1699,6 +1704,7 @@ static void __sk_destruct(struct rcu_head *head)
 
 	if (likely(sk->sk_net_refcnt))
 		put_net(sock_net(sk));
+	trace_android_rvh_sk_free(sk);
 	sk_prot_free(sk->sk_prot_creator, sk);
 }
 
